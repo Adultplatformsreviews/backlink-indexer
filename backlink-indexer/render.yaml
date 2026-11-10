@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: backlink-indexer
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_DATA_DIR
+        value: /opt/render/project/src/data
+      - key: DEFAULT_TARGET_DOMAIN
+        value: feetfinder.com
+      - key: APP_PUBLIC_BASE_URL
+        sync: false

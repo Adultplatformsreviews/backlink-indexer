@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backlink discovery hub</title>
+  <link rel="alternate" type="application/rss+xml" title="RSS" href="{{ hub.rss }}">
+  <link rel="alternate" type="application/atom+xml" title="Atom" href="{{ hub.atom }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: #f6f3ee;
+      color: #1a1f24;
+      line-height: 1.5;
+    }
+    header, footer, main { max-width: 780px; margin: 0 auto; padding: 1.5rem 1.25rem; }
+    header { padding-top: 2.5rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 .4rem; letter-spacing: -.02em; }
+    p { margin: 0 0 1rem; color: #3d4a57; }
+    .meta { font-size: .85rem; color: #5b6773; }
+    ol { padding: 0; margin: 0; list-style: none; counter-reset: n; }
+    li { counter-increment: n; background: #fff; border: 1px solid #e4e0d8; border-radius: 10px; margin: 0 0 .6rem; padding: .75rem 1rem .75rem 2.8rem; position: relative; }
+    li::before { content: counter(n); position: absolute; left: .85rem; top: .75rem; font-variant-numeric: tabular-nums; color: #0f766e; font-weight: 600; }
+    a { color: #0f5f59; word-break: break-all; }
+    a:hover { color: #0b3d39; }
+    footer { font-size: .85rem; color: #5b6773; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Backlink discovery hub</h1>
+    <p>These are submitted backlink URLs, listed so search engines can discover them from a site the owner controls. Listing a URL here is not a guarantee of indexing.</p>
+    <p class="meta">{{ count }} URL{{ 's' if count != 1 else '' }} · Generated {{ generated }} ·
+      <a href="{{ hub.sitemap }}">Sitemap</a> ·
+      <a href="{{ hub.rss }}">RSS</a> ·
+      <a href="{{ hub.atom }}">Atom</a>
+    </p>
+  </header>
+  <main>
+    {% if urls %}
+    <ol>
+      {% for row in urls %}
+      <li><a href="{{ row.url }}" rel="noopener">{{ row.url }}</a></li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p>No URLs have been published to this hub yet.</p>
+    {% endif %}
+  </main>
+  <footer>Backlink Indexer · public crawl surface</footer>
+</body>
+</html>

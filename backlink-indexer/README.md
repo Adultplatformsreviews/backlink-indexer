@@ -18,7 +18,6 @@ Default target domain is `feetfinder.com` (change per project or in Settings).
 ## Run locally
 
 ```bash
-cd backlink-indexer
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -28,7 +27,7 @@ pip install -r requirements.txt
 Or:
 
 ```bash
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8787
+.venv/bin/uvicorn backlink_indexer.main:app --host 0.0.0.0 --port 8787
 ```
 
 Open **http://127.0.0.1:8787** (or `http://<this-machine>:8787`).
@@ -62,7 +61,7 @@ Environment=APP_PUBLIC_BASE_URL=https://indexer.yourdomain.com
 Environment=DEFAULT_TARGET_DOMAIN=feetfinder.com
 Environment=APP_USERNAME=zahoor
 Environment=APP_PASSWORD=change-me
-ExecStart=/opt/backlink-indexer/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787
+ExecStart=/opt/backlink-indexer/.venv/bin/uvicorn backlink_indexer.main:app --host 127.0.0.1 --port 8787
 Restart=always
 User=www-data
 ```
@@ -94,6 +93,7 @@ Use the included `Procfile`. Set `APP_PUBLIC_BASE_URL` to the Railway public URL
 ### Docker
 
 ```bash
+# From the repository root (the Dockerfile lives there).
 docker build -t backlink-indexer .
 docker run -d --name backlink-indexer -p 8787:8787 \
   -e APP_PUBLIC_BASE_URL=https://indexer.yourdomain.com \

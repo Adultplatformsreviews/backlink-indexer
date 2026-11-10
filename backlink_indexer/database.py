@@ -61,18 +61,28 @@ def persistent_db() -> bool:
 
 
 def bootstrap_db() -> dict[str, Any]:
-    """Open the configured database and create tables. Safe to call on every request."""
+    """Open the configured database and create tables. Never raises."""
     try:
         get_conn()
-    except Exception:
-        pass
-    persistent = persistent_db()
-    return {
-        "persistent_db": persistent,
-        "ephemeral_storage": not persistent,
-        "database_env": _db_status.get("env") or "",
-        "database_error": _db_status.get("error") or "",
-    }
+    except Exception as exc:
+        _db_status["persistent"] = False
+        _db_status["ready"] = False
+        _db_status["error"] = _db_status.get("error") or type(exc).__name__
+    try:
+        persistent = persistent_db()
+        return {
+            "persistent_db": persistent,
+            "ephemeral_storage": not persistent,
+            "database_env": _db_status.get("env") or "",
+            "database_error": _db_status.get("error") or "",
+        }
+    except Exception as exc:
+        return {
+            "persistent_db": False,
+            "ephemeral_storage": True,
+            "database_env": "",
+            "database_error": type(exc).__name__,
+        }
 
 
 class Result:

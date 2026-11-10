@@ -3,8 +3,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app.database import close_conn, get_conn, resolve_database_url
-from app.main import app
+from backlink_indexer.database import close_conn, get_conn, resolve_database_url
+from backlink_indexer.main import app
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ def test_signup_project_tokens_and_daily_speed(client, monkeypatch):
             "link_details_json": "[]",
         }
 
-    monkeypatch.setattr("app.queue.precheck_url", fake_precheck)
+    monkeypatch.setattr("backlink_indexer.queue.precheck_url", fake_precheck)
     project_path = created.headers["location"].split("?")[0]
     first = client.post(project_path + "/process", follow_redirects=False)
     assert first.status_code == 303
@@ -167,13 +167,13 @@ def test_indexnow_submission_is_not_indexed(client, monkeypatch):
     async def fake_submit(http, urls, key, key_location):
         return {"ok": True, "detail": "HTTP 200", "count": 1}
 
-    monkeypatch.setattr("app.queue.precheck_url", fake_precheck)
-    monkeypatch.setattr("app.queue.indexnow.submit", fake_submit)
+    monkeypatch.setattr("backlink_indexer.queue.precheck_url", fake_precheck)
+    monkeypatch.setattr("backlink_indexer.queue.indexnow.submit", fake_submit)
     monkeypatch.setattr(
-        "app.queue.google_indexing.publish_url",
+        "backlink_indexer.queue.google_indexing.publish_url",
         lambda url: {"ok": False, "detail": "No service account."},
     )
-    monkeypatch.setattr("app.queue.google_indexing.service_account_present", lambda: False)
+    monkeypatch.setattr("backlink_indexer.queue.google_indexing.service_account_present", lambda: False)
     path = created.headers["location"].split("?")[0]
     client.post(path + "/process", follow_redirects=True)
     row = get_conn().execute(
@@ -246,7 +246,7 @@ def test_banner_hidden_when_database_configured(client, monkeypatch):
             "database_error": "",
         }
 
-    monkeypatch.setattr("app.ui.bootstrap_db", report)
+    monkeypatch.setattr("backlink_indexer.ui.bootstrap_db", report)
     page = client.get("/app")
     assert "Data is not persistent" not in page.text
     assert "POSTGRES_URL" not in page.text or "persistent" in page.text.lower()

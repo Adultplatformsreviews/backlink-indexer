@@ -1,2 +1,2 @@
 [tool.vercel]
-entrypoint = "index:app"
+entrypoint = "backlink_indexer.main:app"

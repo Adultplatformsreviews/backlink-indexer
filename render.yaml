@@ -3,7 +3,7 @@ services:
     name: backlink-indexer
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn backlink_indexer.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: APP_DATA_DIR
         value: /opt/render/project/src/data

@@ -1,0 +1,15 @@
+{% extends "layout.html" %}
+{% block title %}Tickets · Backlink Indexer{% endblock %}
+{% block content %}
+<h1 class="page-title">Tickets</h1>
+<form class="card" method="post" action="/app/tickets">
+  <label class="field">Subject <input name="subject" required></label>
+  <label class="field">Message <textarea name="body" rows="4" required></textarea></label>
+  <button class="btn red" type="submit">Save ticket</button>
+</form>
+{% for ticket in tickets %}
+<article class="card"><h2>{{ ticket.subject }}</h2><p>{{ ticket.body }}</p><p class="sub">{{ ticket.status }} · {{ fmt_date(ticket.created_at) }}</p></article>
+{% else %}
+<p class="empty">No tickets yet.</p>
+{% endfor %}
+{% endblock %}

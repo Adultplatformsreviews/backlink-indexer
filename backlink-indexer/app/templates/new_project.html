@@ -1,0 +1,29 @@
+{% extends "layout.html" %}
+{% block title %}Add project · Backlink Indexer{% endblock %}
+{% block content %}
+<p class="crumb"><a href="/app">Projects</a> / Add project</p>
+<h1 class="page-title">Add project</h1>
+<p class="honest">Indexing lists links on your discovery hub. Instant indexing also calls IndexNow and the Google Indexing API, and only for hosts you mark as owned. Indexing check never pretends a page is indexed without a SERP result or your mark.</p>
+<form class="card" method="post" action="/app/projects" enctype="multipart/form-data">
+  <label class="field">Name <input name="name" required value="{{ form.name if form else '' }}"></label>
+  <div class="field">Project type
+    <div class="types">
+      {% for key, label, blurb in [
+        ('indexing','Indexing','Hub, sitemap, RSS, and WebSub on your domain.'),
+        ('instant','Instant indexing','IndexNow for Bing/Yandex and Google API, owned hosts only.'),
+        ('check','Indexing check','SERP check or manual mark. Unknown if no key.')
+      ] %}
+      <label class="type"><input type="radio" name="project_type" value="{{ key }}" {% if (form.project_type if form else 'indexing') == key %}checked{% endif %}> {{ label }}<div class="sub">{{ blurb }}</div></label>
+      {% endfor %}
+    </div>
+  </div>
+  <label class="field">Target domain <input name="target_domain" value="{{ default_target }}" placeholder="example.com"></label>
+  <label class="field">Daily speed <input name="daily_speed" type="number" min="1" value="{{ default_speed }}"> <span class="sub">{{ speed.free }} per day still free of {{ speed.cap }}.</span></label>
+  <label class="field">Links, one URL per line
+    <textarea name="urls" rows="8" placeholder="https://example.com/article">{{ form.urls if form else '' }}</textarea>
+  </label>
+  <label class="field">CSV or TXT upload <input type="file" name="upload" accept=".csv,.txt,.tsv,text/csv,text/plain"></label>
+  <p class="sub">Each accepted URL costs {{ token_cost }} token. Balance: {{ user.token_balance }}.</p>
+  <button class="btn red" type="submit">Create project</button>
+</form>
+{% endblock %}

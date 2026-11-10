@@ -4,8 +4,23 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.environ.get("APP_DATA_DIR", ROOT / "data")).resolve()
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _data_dir() -> Path:
+    preferred = Path(os.environ.get("APP_DATA_DIR", ROOT / "data")).resolve()
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        probe = preferred / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return preferred
+    except OSError:
+        fallback = Path("/tmp/backlink-indexer-data")
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
+DATA_DIR = _data_dir()
 
 DB_PATH = DATA_DIR / "app.db"
 SA_PATH = DATA_DIR / "google-service-account.json"

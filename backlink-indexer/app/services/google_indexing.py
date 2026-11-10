@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +10,36 @@ SCOPES = ["https://www.googleapis.com/auth/indexing"]
 INDEXING_ENDPOINT = "https://indexing.googleapis.com/v3/urlNotifications:publish"
 
 
+def _file_service_account() -> dict[str, Any] | None:
+    path = Path(SA_PATH)
+    if not path.is_file() or path.stat().st_size <= 0:
+        return None
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(info, dict) and info.get("private_key") and info.get("client_email"):
+        return info
+    return None
+
+
+def service_account_info() -> dict[str, Any] | None:
+    """Service-account JSON stored in Postgres/SQLite, then the local file."""
+    try:
+        from ..database import get_setting
+
+        raw = get_setting("google_sa_json") or ""
+        if raw.strip():
+            info = json.loads(raw)
+            if isinstance(info, dict) and info.get("private_key") and info.get("client_email"):
+                return info
+    except Exception:
+        pass
+    return _file_service_account()
+
+
 def service_account_present() -> bool:
-    return Path(SA_PATH).is_file() and Path(SA_PATH).stat().st_size > 0
+    return service_account_info() is not None
 
 
 def publish_url(url: str, notification_type: str = "URL_UPDATED") -> dict[str, Any]:
@@ -20,7 +49,8 @@ def publish_url(url: str, notification_type: str = "URL_UPDATED") -> dict[str, A
     in Search Console (typically the owner's verified property). It cannot
     be used to request indexing of third-party backlink pages.
     """
-    if not service_account_present():
+    info = service_account_info()
+    if not info:
         return {
             "ok": False,
             "detail": "No Google service-account JSON is uploaded in Settings.",
@@ -35,8 +65,8 @@ def publish_url(url: str, notification_type: str = "URL_UPDATED") -> dict[str, A
         return {"ok": False, "detail": f"Google API libraries are not installed: {exc}"}
 
     try:
-        credentials = service_account.Credentials.from_service_account_file(
-            str(SA_PATH), scopes=SCOPES
+        credentials = service_account.Credentials.from_service_account_info(
+            info, scopes=SCOPES
         )
         service = build("indexing", "v3", credentials=credentials, cache_discovery=False)
         body = {"url": url, "type": notification_type}

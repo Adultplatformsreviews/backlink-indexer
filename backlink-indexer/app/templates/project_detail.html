@@ -1,0 +1,102 @@
+{% extends "layout.html" %}
+{% block title %}{{ project.name }} · Backlink Indexer{% endblock %}
+{% block content %}
+<p class="crumb"><a href="/app">Projects</a> / {{ project.name }}</p>
+<section class="detail-head">
+  <div>
+    <div class="badges">
+      <span class="badge type-{{ project.project_type }}">{{ project.type_label }}</span>
+      <span class="badge run {{ project.run_status }}">{{ project.run_label }}</span>
+    </div>
+    <h1 class="page-title" style="margin-bottom:.2rem">{{ project.name }}</h1>
+    <p class="sub">{{ project.target_domain }} · {{ project.sent }} sent of {{ project.total }} · queue {{ project.queued }} · speed {{ project.daily_speed }}/day</p>
+    <p class="sub">G {{ project.google_indexed }} · Y {{ project.yandex_indexed }} · B {{ project.bing_indexed }} confirmed indexed</p>
+  </div>
+  <div class="side-actions">
+    {% if project.run_status == 'running' %}
+    <form method="post" action="/app/projects/{{ project.id }}/process"><button class="btn red" type="submit">Process due now</button></form>
+    <form method="post" action="/app/projects/{{ project.id }}/stop"><button class="btn stop" type="submit">Stop</button></form>
+    {% elif project.run_status == 'stopped' %}
+    <form method="post" action="/app/projects/{{ project.id }}/resume"><button class="btn" type="submit">Resume</button></form>
+    {% endif %}
+    <a class="btn" href="/app/projects/{{ project.id }}/export.csv?filter={{ filter }}&q={{ q }}">Export CSV</a>
+  </div>
+</section>
+<p class="honest">Google “Indexed” comes from a SERP check or your manual mark. Bing and Yandex show “Submitted” only after IndexNow accepts a host you own. Unknown stays unknown.</p>
+<form class="card" method="post" action="/app/projects/{{ project.id }}/urls" enctype="multipart/form-data">
+  <label class="field">Add links
+    <textarea name="urls" rows="4" placeholder="https://example.com/page"></textarea>
+  </label>
+  <label class="field">Or upload CSV / TXT <input type="file" name="upload" accept=".csv,.txt,.tsv,text/csv,text/plain"></label>
+  <button class="btn red" type="submit">Add to project · {{ token_cost }} token each</button>
+</form>
+<form method="get" class="tabs">
+  {% for key, label in [('all','All'),('queued','Queued'),('sent','Sent'),('indexed','Indexed'),('unknown','Unknown'),('dead','Not live'),('failed','Failed')] %}
+  <a class="tab {{ 'on' if filter == key else '' }}" href="/app/projects/{{ project.id }}?filter={{ key }}&per={{ listing.per }}&q={{ q }}">{{ label }}</a>
+  {% endfor %}
+  <span class="search"><input name="q" value="{{ q }}" placeholder="Filter by URL"><input type="hidden" name="filter" value="{{ filter }}"><input type="hidden" name="per" value="{{ listing.per }}"></span>
+</form>
+<form method="post" action="/app/projects/{{ project.id }}/bulk">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="checkAll" aria-label="Select all"></th>
+          <th>URL</th>
+          <th>Queue</th>
+          <th>Google</th>
+          <th>Yandex</th>
+          <th>Bing</th>
+          <th>HTTP</th>
+          <th>Checked</th>
+          <th>Submitted</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in listing.urls %}
+        <tr>
+          <td><input type="checkbox" name="ids" value="{{ row.id }}"></td>
+          <td class="url"><a href="{{ row.url }}" target="_blank" rel="noopener">{{ row.url }}</a>
+            {% if row.queue_note %}<div class="sub">{{ row.queue_note }}</div>{% endif %}
+          </td>
+          <td>{{ state_label(row.queue_status) }}</td>
+          <td>{{ state_label(row.google_state) }}</td>
+          <td>{{ state_label(row.yandex_state) }}</td>
+          <td>{{ state_label(row.bing_state) }}</td>
+          <td>{% if row.http_status %}{{ row.http_status }}{% if row.is_live == 0 %} · dead{% elif row.is_live == 1 %} · live{% endif %}{% else %}—{% endif %}</td>
+          <td>{{ fmt_date(row.last_checked_at) }}</td>
+          <td>{{ fmt_date(row.last_submitted_at) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="empty">No links in this filter.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="chips" style="margin-top:.7rem">
+    <select name="action">
+      <option value="requeue">Queue selected again</option>
+      <option value="check">Check indexed (Google SERP)</option>
+      <option value="mark_google_indexed">Mark Google indexed</option>
+      <option value="mark_google_not_indexed">Mark Google not indexed</option>
+      <option value="mark_yandex_indexed">Mark Yandex indexed</option>
+      <option value="mark_yandex_not_indexed">Mark Yandex not indexed</option>
+      <option value="mark_bing_indexed">Mark Bing indexed</option>
+      <option value="mark_bing_not_indexed">Mark Bing not indexed</option>
+      <option value="hub_on">List on discovery hub</option>
+      <option value="hub_off">Remove from discovery hub</option>
+      <option value="delete">Delete</option>
+    </select>
+    <button class="btn" type="submit">Apply</button>
+  </div>
+</form>
+<div class="pager">
+  Show by
+  {% for n in (5, 10, 25) %}
+    <a class="{{ 'on' if listing.per == n else '' }}" href="/app/projects/{{ project.id }}?per={{ n }}&filter={{ filter }}&q={{ q }}">{{ n }}</a>
+  {% endfor %}
+  <span>{{ listing.page }} / {{ listing.pages }} · {{ listing.total }} links</span>
+  {% if listing.page > 1 %}<a href="/app/projects/{{ project.id }}?page={{ listing.page - 1 }}&per={{ listing.per }}&filter={{ filter }}&q={{ q }}">Previous</a>{% endif %}
+  {% if listing.page < listing.pages %}<a href="/app/projects/{{ project.id }}?page={{ listing.page + 1 }}&per={{ listing.per }}&filter={{ filter }}&q={{ q }}">Next</a>{% endif %}
+</div>
+{% endblock %}

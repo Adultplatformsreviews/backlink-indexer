@@ -1,81 +1,120 @@
 from __future__ import annotations
 
-import asyncio
 import csv
+import hmac
 import io
 import json
-import secrets
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+import os
 from typing import Any, Optional
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-import httpx
-from fastapi import (
-    Depends,
-    FastAPI,
-    File,
-    Form,
-    Header,
-    HTTPException,
-    Query,
-    Request,
-    UploadFile,
-)
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    PlainTextResponse,
-    Response,
-    StreamingResponse,
-)
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import __version__
-from .config import (
-    APP_PASSWORD,
-    APP_USERNAME,
-    DATA_DIR,
-    DEFAULT_TARGET_DOMAIN,
-    FETCH_CONCURRENCY,
-    PUBLIC_BASE_URL,
-    SA_PATH,
-    USER_AGENT,
+from .auth import (
+    add_tokens,
+    api_key_prefix,
+    create_session,
+    create_user,
+    delete_session,
+    get_user,
+    get_user_by_username,
+    revoke_api_key,
+    rotate_api_key,
+    user_from_api_key,
+    verify_password,
 )
+from .config import DEFAULT_TARGET_DOMAIN, PUBLIC_BASE_URL, SA_PATH
 from .database import (
+    bootstrap_db,
+    close_conn,
     get_conn,
     get_setting,
     get_settings,
     init_db,
-    row_to_dict,
-    rows_to_dicts,
     set_setting,
     set_settings,
     tx,
     utcnow,
 )
-from .services import google_indexing, indexnow, serp, websub
-from .services.precheck import RobotsCache, precheck_url
-from .services.urlutil import host_matches, host_of, normalize_submitted, registrable_host
-
-ROOT = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=str(ROOT / "templates"))
-
-app = FastAPI(
-    title="Backlink Indexer",
-    version=__version__,
-    docs_url="/api/docs",
-    redoc_url=None,
+from .ingest import add_urls, parse_upload
+from .projects import (
+    PROJECT_TYPES,
+    TYPE_LABELS,
+    active_count,
+    allocated_speed,
+    archive_count,
+    create_project,
+    delete_project,
+    get_project,
+    list_projects,
+    list_urls,
+    set_run_status,
+    set_speed,
+    type_counts,
 )
-app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+from .queue import check_ids, mark_engines, requeue, run_queue
+from .services import google_indexing, indexnow, websub
+from .services.urlutil import host_of, registrable_host
+from .ui import current_user, login_redirect, render
 
-_jobs: dict[str, asyncio.Task] = {}
-_http_client: Optional[httpx.AsyncClient] = None
+ROOT_DIR = __import__("pathlib").Path(__file__).resolve().parent
+
+app = FastAPI(title="Backlink Indexer", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
+app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="static")
+
+
+@app.middleware("http")
+async def close_db(request: Request, call_next):
+    try:
+        return await call_next(request)
+    finally:
+        close_conn()
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    init_db()
+    close_conn()
+
+
+def _user(request: Request):
+    return current_user(request)
+
+
+def _need(request: Request):
+    user = _user(request)
+    if not user:
+        return None, login_redirect(request)
+    return user, None
+
+
+def _session_response(response: RedirectResponse, request: Request, token: str) -> RedirectResponse:
+    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    response.set_cookie(
+        "bi_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        max_age=60 * 60 * 24 * 30,
+        path="/",
+    )
+    return response
+
+
+def _safe_next(value: str) -> str:
+    if value.startswith("/") and not value.startswith("//"):
+        return value
+    return "/app"
+
+
+def _notice(path: str, message: str) -> RedirectResponse:
+    sep = "&" if "?" in path else "?"
+    return RedirectResponse(f"{path}{sep}notice={message}", status_code=303)
 
 
 def public_base(request: Optional[Request] = None) -> str:
@@ -99,209 +138,916 @@ def hub_urls(request: Optional[Request] = None) -> dict[str, str]:
     }
 
 
-class BasicAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if not APP_USERNAME or not APP_PASSWORD:
-            return await call_next(request)
-        path = request.url.path
-        # Public crawl surfaces must stay unauthenticated.
-        public_prefixes = (
-            "/hub",
-            "/robots.txt",
-            "/favicon.ico",
-            "/static/",
-        )
-        if path in {"/robots.txt", "/favicon.ico"} or path.startswith(public_prefixes):
-            return await call_next(request)
-        # IndexNow key file: /{key}.txt
-        if path.endswith(".txt") and path.count("/") == 1:
-            return await call_next(request)
-        auth = request.headers.get("authorization") or ""
-        expected = "Basic " + __import__("base64").b64encode(
-            f"{APP_USERNAME}:{APP_PASSWORD}".encode()
-        ).decode()
-        if auth != expected:
-            return Response(
-                "Authentication required",
-                status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="Backlink Indexer"'},
-                media_type="text/plain",
-            )
-        return await call_next(request)
+def _hub_rows() -> list[dict]:
+    include = get_setting("hub_include") or "all"
+    extra = ""
+    if include == "live":
+        extra = "AND is_live = 1"
+    elif include == "has_link":
+        extra = "AND has_link = 1"
+    return get_conn().execute(
+        f"""SELECT url, updated_at, created_at, has_link, is_live, http_status
+            FROM urls WHERE in_hub = 1 {extra} ORDER BY id DESC"""
+    ).fetchall()
 
 
-app.add_middleware(BasicAuthMiddleware)
+def _cron_ok(request: Request) -> bool:
+    secret = (os.environ.get("CRON_SECRET") or "").strip()
+    header = request.headers.get("authorization") or ""
+    if secret:
+        return hmac.compare_digest(header, f"Bearer {secret}")
+    if os.environ.get("VERCEL"):
+        return (request.headers.get("user-agent") or "").lower().startswith("vercel-cron")
+    return True
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    init_db()
-    global _http_client
-    _http_client = httpx.AsyncClient(
-        follow_redirects=True,
-        headers={"User-Agent": USER_AGENT},
-        timeout=30.0,
-        limits=httpx.Limits(max_connections=FETCH_CONCURRENCY + 4, max_keepalive_connections=8),
-    )
+def _ids(form: Any) -> list[int]:
+    values = form.getlist("ids") if hasattr(form, "getlist") else form.get("ids") or []
+    if isinstance(values, str):
+        values = [values]
+    out = []
+    for value in values:
+        try:
+            out.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    if _http_client is not None:
-        await _http_client.aclose()
+async def _lines_from_upload(upload: Optional[UploadFile], pasted: str) -> list[str]:
+    lines = pasted.splitlines() if pasted else []
+    if upload is not None and upload.filename:
+        raw = await upload.read()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1", errors="replace")
+        lines.extend(parse_upload(text, upload.filename))
+    return lines
 
 
-def client() -> httpx.AsyncClient:
-    assert _http_client is not None
-    return _http_client
+def _account_speed(user: dict) -> dict:
+    cap = int(user.get("daily_speed_cap") or 0)
+    used = allocated_speed(user["id"])
+    return {"cap": cap, "used": used, "free": max(0, cap - used), "projects": active_count(user["id"])}
 
 
 # ---------------------------------------------------------------------------
-# Pages
+# Public pages
 # ---------------------------------------------------------------------------
 
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    return templates.TemplateResponse(
-        request,
-        "app.html",
-        {
-            "version": __version__,
-            "default_target": get_setting("default_target_domain", DEFAULT_TARGET_DOMAIN),
-            "hub": hub_urls(request),
-        },
-    )
+@app.get("/health")
+async def health():
+    report = bootstrap_db()
+    return {"ok": report["database_error"] == "", "version": __version__, **report}
 
 
 @app.get("/favicon.ico")
 async def favicon():
-    path = ROOT / "static" / "favicon.svg"
+    path = ROOT_DIR / "static" / "favicon.svg"
     if path.exists():
         return FileResponse(path, media_type="image/svg+xml")
     return PlainTextResponse("", status_code=204)
 
 
+@app.get("/")
+async def landing(request: Request):
+    return render(request, "landing.html", active="home")
+
+
+@app.get("/pricing")
+async def pricing(request: Request):
+    return render(request, "pricing.html", active="pricing")
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    if _user(request):
+        return RedirectResponse(_safe_next(request.query_params.get("next") or "/app"), status_code=303)
+    return render(request, "login.html", next=request.query_params.get("next") or "/app")
+
+
+@app.post("/login")
+async def login_submit(request: Request, username: str = Form(""), password: str = Form(""), next: str = Form("/app")):
+    user = get_user_by_username(username)
+    if not user or not verify_password(password, user["password_hash"]):
+        return render(request, "login.html", status_code=400, error="Username or password is wrong.", next=next)
+    token = create_session(user["id"])
+    return _session_response(RedirectResponse(_safe_next(next), status_code=303), request, token)
+
+
+@app.get("/signup")
+async def signup_page(request: Request):
+    if _user(request):
+        return RedirectResponse("/app", status_code=303)
+    return render(request, "signup.html")
+
+
+@app.post("/signup")
+async def signup_submit(request: Request, username: str = Form(""), password: str = Form("")):
+    user, error = create_user(username, password)
+    if not user:
+        return render(request, "signup.html", status_code=400, error=error)
+    token = create_session(user["id"])
+    return _session_response(_notice("/app", "Account created. Your token balance is ready to use."), request, token)
+
+
+@app.post("/logout")
+@app.get("/logout")
+async def logout(request: Request):
+    delete_session(request.cookies.get("bi_session", ""))
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie("bi_session", path="/")
+    return response
+
+
+@app.get("/app/assistant")
+async def assistant_removed():
+    return RedirectResponse("/app", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# App shell
+# ---------------------------------------------------------------------------
+
+@app.get("/app")
+async def projects_page(request: Request, type: str = "", q: str = ""):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    kind = type if type in PROJECT_TYPES else ""
+    projects = list_projects(user["id"], project_type=kind, q=q)
+    user = get_user(user["id"]) or user
+    return render(
+        request,
+        "projects.html",
+        user=user,
+        active="projects",
+        projects=projects,
+        counts=type_counts(user["id"]),
+        selected_type=kind,
+        q=q,
+        speed=_account_speed(user),
+        token_cost=get_setting("tokens_per_url") or "1",
+    )
+
+
+@app.get("/app/archive")
+async def archive_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    return render(
+        request,
+        "projects.html",
+        user=user,
+        active="archive",
+        projects=list_projects(user["id"], archived=True),
+        counts=type_counts(user["id"]),
+        selected_type="",
+        q="",
+        speed=_account_speed(user),
+        token_cost=get_setting("tokens_per_url") or "1",
+        archived_view=True,
+    )
+
+
+@app.get("/app/new")
+async def new_project_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    user = get_user(user["id"]) or user
+    free = _account_speed(user)["free"]
+    return render(
+        request,
+        "new_project.html",
+        user=user,
+        active="projects",
+        speed=_account_speed(user),
+        default_speed=max(1, min(10, free or 1)),
+        default_target=get_setting("default_target_domain") or DEFAULT_TARGET_DOMAIN,
+        token_cost=get_setting("tokens_per_url") or "1",
+    )
+
+
+@app.post("/app/projects")
+async def create_project_route(
+    request: Request,
+    name: str = Form(""),
+    project_type: str = Form("indexing"),
+    target_domain: str = Form(""),
+    daily_speed: int = Form(10),
+    urls: str = Form(""),
+    upload: Optional[UploadFile] = File(None),
+):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    target = registrable_host(target_domain) or get_setting("default_target_domain") or DEFAULT_TARGET_DOMAIN
+    project, error = create_project(
+        user, name=name, target_domain=target, project_type=project_type, daily_speed=daily_speed
+    )
+    if not project:
+        user = get_user(user["id"]) or user
+        return render(
+            request,
+            "new_project.html",
+            status_code=400,
+            user=user,
+            active="projects",
+            error=error,
+            speed=_account_speed(user),
+            default_speed=daily_speed,
+            default_target=target,
+            token_cost=get_setting("tokens_per_url") or "1",
+            form={"name": name, "project_type": project_type, "urls": urls},
+        )
+    lines = await _lines_from_upload(upload, urls)
+    result = add_urls(user, project, lines, "Initial batch") if lines else {"added": 0, "duplicates": 0, "skipped": 0, "not_charged": 0}
+    message = f"Project created. Added {result['added']} link(s)."
+    if result.get("not_charged"):
+        message += f" {result['not_charged']} skipped because the token balance ran out."
+    if result.get("duplicates"):
+        message += f" {result['duplicates']} duplicate(s) ignored."
+    return _notice(f"/app/projects/{project['id']}", message)
+
+
+@app.get("/app/projects/{project_id}")
+async def project_detail(project_id: int, request: Request, q: str = "", filter: str = "all", page: int = 1, per: int = 10):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    project = get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404, "Project not found")
+    listing = list_urls(project_id, q=q, filt=filter, page=page, per=per)
+    return render(
+        request,
+        "project_detail.html",
+        user=user,
+        active="projects" if project["run_status"] != "archived" else "archive",
+        project=project,
+        listing=listing,
+        q=q,
+        filter=filter,
+        token_cost=get_setting("tokens_per_url") or "1",
+        speed=_account_speed(get_user(user["id"]) or user),
+    )
+
+
+@app.post("/app/projects/{project_id}/speed")
+async def update_speed(project_id: int, request: Request, daily_speed: int = Form(...)):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    user = get_user(user["id"]) or user
+    error = set_speed(user, project_id, daily_speed)
+    target = f"/app/projects/{project_id}" if request.query_params.get("from") != "list" else "/app"
+    if error:
+        return _notice(target, error)
+    return _notice(target, "Daily speed saved.")
+
+
+@app.post("/app/projects/{project_id}/stop")
+async def stop_project(project_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    set_run_status(user["id"], project_id, "stopped")
+    return _notice(f"/app/projects/{project_id}", "Project stopped. The queue will skip it.")
+
+
+@app.post("/app/projects/{project_id}/resume")
+async def resume_project(project_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    set_run_status(user["id"], project_id, "running")
+    return _notice(f"/app/projects/{project_id}", "Project resumed.")
+
+
+@app.post("/app/projects/{project_id}/archive")
+async def archive_project(project_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    set_run_status(user["id"], project_id, "archived")
+    return _notice("/app/archive", "Project archived. Its daily speed is free to distribute again.")
+
+
+@app.post("/app/projects/{project_id}/unarchive")
+async def unarchive_project(project_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    project = get_project(project_id, user["id"])
+    user = get_user(user["id"]) or user
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if active_count(user["id"]) >= int(user.get("project_limit") or 5):
+        return _notice("/app/archive", "Project limit reached. Archive another project first.")
+    free = int(user.get("daily_speed_cap") or 0) - allocated_speed(user["id"])
+    if int(project["daily_speed"]) > free:
+        return _notice("/app/archive", f"Only {max(free, 0)} per day is free. Lower this project's speed after you free up quota.")
+    set_run_status(user["id"], project_id, "stopped")
+    return _notice(f"/app/projects/{project_id}", "Project restored in the stopped state. Resume it when you want the queue to run.")
+
+
+@app.post("/app/projects/{project_id}/delete")
+async def remove_project(project_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    delete_project(user["id"], project_id)
+    return _notice("/app", "Project deleted.")
+
+
+@app.post("/app/projects/{project_id}/process")
+async def process_project(project_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not get_project(project_id, user["id"]):
+        raise HTTPException(404, "Project not found")
+    result = await run_queue(user_id=user["id"], project_id=project_id)
+    message = f"Processed {result['processed']} link(s)."
+    if result.get("stopped_for_time"):
+        message += " Stopped at the time budget; run again to continue today's quota."
+    if result["processed"] == 0:
+        message = "Nothing was due. The daily speed may already be used, or the queue is empty."
+    return _notice(f"/app/projects/{project_id}", message)
+
+
+@app.post("/app/projects/{project_id}/urls")
+async def add_project_urls(
+    project_id: int,
+    request: Request,
+    urls: str = Form(""),
+    upload: Optional[UploadFile] = File(None),
+):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    project = get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404, "Project not found")
+    lines = await _lines_from_upload(upload, urls)
+    result = add_urls(user, project, lines, "Added from project")
+    message = f"Added {result['added']} link(s)."
+    if result.get("not_charged"):
+        message += f" {result['not_charged']} not added (not enough tokens)."
+    if result.get("duplicates"):
+        message += f" {result['duplicates']} duplicate(s)."
+    if result.get("skipped"):
+        message += f" {result['skipped']} line(s) were not URLs."
+    return _notice(f"/app/projects/{project_id}", message)
+
+
+@app.post("/app/projects/{project_id}/bulk")
+async def bulk(project_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not get_project(project_id, user["id"]):
+        raise HTTPException(404, "Project not found")
+    form = await request.form()
+    ids = _ids(form)
+    action = str(form.get("action") or "")
+    message = "No links selected."
+    if ids and action == "delete":
+        with tx() as conn:
+            cur = conn.execute(
+                f"DELETE FROM urls WHERE project_id = ? AND id IN ({','.join('?' * len(ids))})",
+                [project_id, *ids],
+            )
+        message = f"Deleted {cur.rowcount} link(s)."
+    elif ids and action == "hub_on":
+        with tx() as conn:
+            conn.execute(
+                f"UPDATE urls SET in_hub = 1, updated_at = ? WHERE project_id = ? AND id IN ({','.join('?' * len(ids))})",
+                [utcnow(), project_id, *ids],
+            )
+        message = "Selected links are listed on the discovery hub."
+    elif ids and action == "hub_off":
+        with tx() as conn:
+            conn.execute(
+                f"UPDATE urls SET in_hub = 0, updated_at = ? WHERE project_id = ? AND id IN ({','.join('?' * len(ids))})",
+                [utcnow(), project_id, *ids],
+            )
+        message = "Selected links were removed from the discovery hub."
+    elif ids and action == "requeue":
+        count = requeue(user["id"], project_id, ids)
+        message = f"Queued {count} link(s) again. Process due now to run them within today's speed."
+    elif ids and action == "check":
+        count, error = await check_ids(user["id"], project_id, ids)
+        message = error or f"Google SERP check updated {count} link(s). Yandex and Bing stay unknown until you mark them."
+    elif ids and action.startswith("mark_"):
+        parts = action.split("_")
+        # mark_google_indexed / mark_google_not_indexed
+        if len(parts) >= 3 and parts[1] in {"google", "yandex", "bing"}:
+            indexed = parts[2] == "indexed" and "not" not in action
+            if "not_indexed" in action:
+                indexed = False
+            count = mark_engines(user["id"], project_id, ids, parts[1], indexed)
+            message = f"Manually marked {count} link(s). This does not query the search engine."
+        else:
+            message = "Unknown mark action."
+    elif not ids:
+        message = "Select at least one link."
+    else:
+        message = "Unknown action."
+    return _notice(f"/app/projects/{project_id}", message)
+
+
+@app.get("/app/projects/{project_id}/export.csv")
+async def export_csv(project_id: int, request: Request, q: str = "", filter: str = "all"):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    project = get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404, "Project not found")
+    listing = list_urls(project_id, q=q, filt=filter, page=1, per=25)
+    # Export the full filtered set, not one page.
+    listing = list_urls(project_id, q=q, filt=filter, page=1, per=25)
+    total = listing["total"]
+    rows = []
+    page = 1
+    while len(rows) < total:
+        chunk = list_urls(project_id, q=q, filt=filter, page=page, per=25)
+        rows.extend(chunk["urls"])
+        if page >= chunk["pages"]:
+            break
+        page += 1
+    buf = io.StringIO()
+    fields = [
+        "id", "url", "queue_status", "google_state", "yandex_state", "bing_state",
+        "http_status", "is_live", "submission_status", "index_status", "index_source",
+        "index_note", "queue_note", "last_checked_at", "last_submitted_at", "created_at",
+    ]
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: row.get(key, "") for key in fields})
+    filename = f"backlink-indexer-{project['name'][:40].replace(' ', '_')}.csv"
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/app/plans")
+async def plans_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    user = get_user(user["id"]) or user
+    return render(request, "plans.html", user=user, active="plans", speed=_account_speed(user))
+
+
+@app.post("/app/plans/topup")
+async def topup(request: Request, amount: int = Form(...)):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not user.get("is_admin"):
+        return _notice("/app/plans", "Only the operator can add tokens. Card payments are not connected.")
+    if amount < 1 or amount > 1_000_000:
+        return _notice("/app/plans", "Enter a token amount between 1 and 1000000.")
+    add_tokens(user["id"], amount)
+    return _notice("/app/plans", f"Added {amount} tokens to this account.")
+
+
+@app.get("/app/tools")
+async def tools_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    return render(request, "tools.html", user=user, active="tools", hub=hub_urls(request))
+
+
+@app.get("/app/notifications")
+async def notifications_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    rows = get_conn().execute(
+        "SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 100",
+        (user["id"],),
+    ).fetchall()
+    with tx() as conn:
+        conn.execute(
+            "UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL",
+            (utcnow(), user["id"]),
+        )
+    return render(request, "notifications.html", user=user, active="notifications", items=rows)
+
+
+@app.get("/app/tickets")
+async def tickets_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    rows = get_conn().execute(
+        "SELECT * FROM tickets WHERE user_id = ? ORDER BY id DESC",
+        (user["id"],),
+    ).fetchall()
+    return render(request, "tickets.html", user=user, active="tickets", tickets=rows)
+
+
+@app.post("/app/tickets")
+async def create_ticket(request: Request, subject: str = Form(""), body: str = Form("")):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    subject = subject.strip()
+    body = body.strip()
+    if len(subject) < 3 or len(body) < 3:
+        return _notice("/app/tickets", "Add a subject and a message.")
+    with tx() as conn:
+        conn.execute(
+            "INSERT INTO tickets (user_id, subject, body, status, created_at) VALUES (?, ?, ?, 'open', ?)",
+            (user["id"], subject[:120], body[:4000], utcnow()),
+        )
+    return _notice("/app/tickets", "Ticket saved.")
+
+
+@app.get("/app/api")
+async def api_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    return render(
+        request,
+        "api.html",
+        user=user,
+        active="api",
+        key_prefix=api_key_prefix(user["id"]),
+        base=str(request.base_url).rstrip("/"),
+    )
+
+
+@app.post("/app/api/rotate")
+async def api_rotate(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    raw = rotate_api_key(user["id"])
+    return render(
+        request,
+        "api.html",
+        user=user,
+        active="api",
+        key_prefix=raw[:7],
+        new_key=raw,
+        base=str(request.base_url).rstrip("/"),
+    )
+
+
+@app.post("/app/api/revoke")
+async def api_revoke(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    revoke_api_key(user["id"])
+    return _notice("/app/api", "API key revoked.")
+
+
+@app.get("/app/affiliate")
+async def affiliate_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    return render(request, "affiliate.html", user=user, active="affiliate")
+
+
+@app.get("/app/settings")
+async def settings_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not user.get("is_admin"):
+        return render(request, "settings.html", user=user, active="settings", forbidden=True)
+    settings = get_settings()
+    if settings.get("serp_api_key"):
+        settings["serp_api_key"] = _mask(settings["serp_api_key"])
+    hosts = get_conn().execute("SELECT * FROM owned_hosts ORDER BY host").fetchall()
+    info = google_indexing.service_account_info() or {}
+    return render(
+        request,
+        "settings.html",
+        user=user,
+        active="settings",
+        settings=settings,
+        hosts=hosts,
+        sa_email=info.get("client_email", ""),
+        hub=hub_urls(request),
+        forbidden=False,
+    )
+
+
+@app.post("/app/settings")
+async def save_settings(
+    request: Request,
+    action: str = Form("save"),
+    public_base_url: str = Form(""),
+    default_target_domain: str = Form(""),
+    websub_hub: str = Form(""),
+    hub_include: str = Form("all"),
+    indexnow_key: str = Form(""),
+    serp_provider: str = Form("serpapi"),
+    serp_api_key: str = Form(""),
+    serp_endpoint: str = Form(""),
+    tokens_per_url: str = Form("1"),
+    host: str = Form(""),
+    host_id: int = Form(0),
+):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not user.get("is_admin"):
+        return _notice("/app/settings", "Settings are limited to the operator account.")
+    if action == "gen-indexnow":
+        set_setting("indexnow_key", indexnow.generate_key())
+        return _notice("/app/settings", "New IndexNow key saved.")
+    if action == "add-host":
+        cleaned = registrable_host(host)
+        if not cleaned:
+            return _notice("/app/settings", "Enter a hostname such as example.com.")
+        with tx() as conn:
+            conn.execute(
+                "INSERT INTO owned_hosts (host, notes, created_at) VALUES (?, '', ?) ON CONFLICT (host) DO NOTHING",
+                (cleaned, utcnow()),
+            )
+        return _notice("/app/settings", f"Added owned host {cleaned}.")
+    if action == "delete-host" and host_id:
+        with tx() as conn:
+            conn.execute("DELETE FROM owned_hosts WHERE id = ?", (host_id,))
+        return _notice("/app/settings", "Owned host removed.")
+    if action == "delete-sa":
+        set_setting("google_sa_json", "")
+        if SA_PATH.exists():
+            try:
+                SA_PATH.unlink()
+            except OSError:
+                pass
+        return _notice("/app/settings", "Google service account removed.")
+    updates = {
+        "public_base_url": public_base_url.strip().rstrip("/"),
+        "default_target_domain": registrable_host(default_target_domain) or DEFAULT_TARGET_DOMAIN,
+        "websub_hub": websub_hub.strip() or websub.DEFAULT_HUB,
+        "hub_include": hub_include if hub_include in {"all", "live", "has_link"} else "all",
+        "serp_provider": serp_provider if serp_provider in {"serpapi", "valueserp", "searchapi", "custom"} else "serpapi",
+        "serp_endpoint": serp_endpoint.strip(),
+        "tokens_per_url": str(max(0, int(tokens_per_url or "1"))),
+    }
+    if indexnow_key.strip():
+        key = indexnow_key.strip()
+        if len(key) < 8 or len(key) > 128:
+            return _notice("/app/settings", "IndexNow key must be 8–128 characters.")
+        updates["indexnow_key"] = key
+    if serp_api_key.strip() and "••••" not in serp_api_key:
+        updates["serp_api_key"] = serp_api_key.strip()
+    set_settings(updates)
+    return _notice("/app/settings", "Settings saved.")
+
+
+@app.post("/app/settings/google-sa")
+async def upload_sa(request: Request, file: UploadFile = File(...)):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not user.get("is_admin"):
+        return _notice("/app/settings", "Settings are limited to the operator account.")
+    raw = await file.read()
+    try:
+        info = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return _notice("/app/settings", "That file is not valid JSON.")
+    if info.get("type") != "service_account" or "private_key" not in info or "client_email" not in info:
+        return _notice("/app/settings", "Upload a Google service-account JSON key.")
+    set_setting("google_sa_json", json.dumps(info))
+    try:
+        SA_PATH.write_text(json.dumps(info), encoding="utf-8")
+    except OSError:
+        pass
+    return _notice("/app/settings", f"Service account saved for {info.get('client_email')}.")
+
+
+# ---------------------------------------------------------------------------
+# API v1
+# ---------------------------------------------------------------------------
+
+def _bearer_user(request: Request):
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("bearer "):
+        return None
+    return user_from_api_key(header.split(" ", 1)[1])
+
+
+@app.get("/api/meta")
+async def api_meta(request: Request):
+    report = bootstrap_db()
+    return {"version": __version__, "hub": hub_urls(request), **report}
+
+
+@app.get("/api/v1/credits")
+async def v1_credits(request: Request):
+    user = _bearer_user(request)
+    if not user:
+        raise HTTPException(401, "Send Authorization: Bearer <api key>.")
+    return {"token_balance": user["token_balance"], "daily_speed_cap": user["daily_speed_cap"], "plan": user["plan_name"]}
+
+
+@app.get("/api/v1/campaigns")
+async def v1_campaigns(request: Request):
+    user = _bearer_user(request)
+    if not user:
+        raise HTTPException(401, "Send Authorization: Bearer <api key>.")
+    return {"projects": list_projects(user["id"])}
+
+
+@app.post("/api/v1/campaigns")
+async def v1_create(request: Request):
+    user = _bearer_user(request)
+    if not user:
+        raise HTTPException(401, "Send Authorization: Bearer <api key>.")
+    payload = await request.json()
+    target = registrable_host(str(payload.get("target_domain") or "")) or DEFAULT_TARGET_DOMAIN
+    project, error = create_project(
+        user,
+        name=str(payload.get("name") or ""),
+        target_domain=target,
+        project_type=str(payload.get("project_type") or "indexing"),
+        daily_speed=int(payload.get("daily_speed") or 10),
+    )
+    if not project:
+        raise HTTPException(400, error)
+    lines = payload.get("urls") or []
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    result = add_urls(user, project, [str(item) for item in lines], "API batch") if lines else {"added": 0}
+    return {"project": get_project(project["id"], user["id"]), "ingest": result}
+
+
+@app.get("/api/v1/campaigns/{project_id}")
+async def v1_get(project_id: int, request: Request):
+    user = _bearer_user(request)
+    if not user:
+        raise HTTPException(401, "Send Authorization: Bearer <api key>.")
+    project = get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return {"project": project}
+
+
+@app.get("/api/v1/campaigns/{project_id}/report")
+async def v1_report(project_id: int, request: Request):
+    user = _bearer_user(request)
+    if not user:
+        raise HTTPException(401, "Send Authorization: Bearer <api key>.")
+    project = get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return {
+        "project_id": project_id,
+        "total": project["total"],
+        "sent": project["sent"],
+        "queued": project["queued"],
+        "google_indexed": project["google_indexed"],
+        "yandex_indexed": project["yandex_indexed"],
+        "bing_indexed": project["bing_indexed"],
+        "note": "Indexed counts include only SERP checks and manual marks. A submission is not an indexed page.",
+    }
+
+
+@app.post("/api/v1/campaigns/{project_id}/urls")
+async def v1_urls(project_id: int, request: Request):
+    user = _bearer_user(request)
+    if not user:
+        raise HTTPException(401, "Send Authorization: Bearer <api key>.")
+    project = get_project(project_id, user["id"])
+    if not project:
+        raise HTTPException(404, "Project not found")
+    payload = await request.json()
+    lines = payload.get("urls") or []
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    return add_urls(user, project, [str(item) for item in lines], "API batch")
+
+
+@app.api_route("/api/cron/tick", methods=["GET", "POST"])
+async def cron_tick(request: Request):
+    if not _cron_ok(request):
+        raise HTTPException(401, "Cron authentication failed.")
+    result = await run_queue()
+    report = bootstrap_db()
+    return {"ok": True, **{k: v for k, v in result.items() if k != "ping"}, "persistent_db": report["persistent_db"]}
+
+
+# ---------------------------------------------------------------------------
+# Discovery hub (public)
+# ---------------------------------------------------------------------------
+
 @app.get("/robots.txt")
 async def robots_txt(request: Request):
     body = (
-        "User-agent: *\n"
-        "Allow: /hub\n"
-        "Allow: /hub/\n"
-        "Allow: /robots.txt\n"
-        "Disallow: /api/\n"
-        "Disallow: /static/\n"
+        "User-agent: *\nAllow: /hub\nAllow: /hub/\nAllow: /robots.txt\n"
+        "Disallow: /api/\nDisallow: /app\nDisallow: /static/\n"
         f"Sitemap: {hub_urls(request)['sitemap']}\n"
     )
-    return PlainTextResponse(body, media_type="text/plain")
+    return PlainTextResponse(body)
 
 
-@app.get("/hub", response_class=HTMLResponse)
+@app.get("/hub")
 async def hub_html(request: Request):
-    rows = _hub_url_rows()
-    return templates.TemplateResponse(
+    rows = _hub_rows()
+    return render(
         request,
         "hub.html",
-        {
-            "urls": rows,
-            "hub": hub_urls(request),
-            "generated": utcnow(),
-            "count": len(rows),
-        },
+        urls=rows,
+        hub=hub_urls(request),
+        generated=utcnow(),
+        count=len(rows),
     )
 
 
 @app.get("/hub/sitemap.xml")
 async def hub_sitemap(request: Request):
-    rows = _hub_url_rows()
-    lastmod_default = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rows = _hub_rows()
+    today = utcnow()[:10]
+    hub = hub_urls(request)
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        "  <url>",
+        f"    <loc>{xml_escape(hub['hub'])}</loc>",
+        f"    <lastmod>{today}</lastmod>",
+        "  </url>",
     ]
-    # Include the hub itself plus every submitted discovery URL.
-    hub = hub_urls(request)
-    parts.append("  <url>")
-    parts.append(f"    <loc>{xml_escape(hub['hub'])}</loc>")
-    parts.append(f"    <lastmod>{lastmod_default}</lastmod>")
-    parts.append("  </url>")
     for row in rows:
-        lastmod = (row.get("updated_at") or row.get("created_at") or lastmod_default)[:10]
+        lastmod = (row.get("updated_at") or row.get("created_at") or today)[:10]
         parts.append("  <url>")
         parts.append(f"    <loc>{xml_escape(row['url'])}</loc>")
         parts.append(f"    <lastmod>{xml_escape(lastmod)}</lastmod>")
         parts.append("  </url>")
     parts.append("</urlset>")
-    xml = "\n".join(parts) + "\n"
-    return Response(xml, media_type="application/xml")
+    return Response("\n".join(parts) + "\n", media_type="application/xml")
 
 
 @app.get("/hub/feed.xml")
 async def hub_rss(request: Request):
-    rows = _hub_url_rows()
+    rows = _hub_rows()
     hub = hub_urls(request)
-    now = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
     items = []
     for row in rows[:200]:
-        title = xml_escape(row["url"])
-        pub = _rss_date(row.get("created_at"))
-        desc = "Submitted backlink URL for crawl discovery."
-        if row.get("has_link") == 1:
-            desc += " Pre-check found a link to the target domain."
-        elif row.get("has_link") == 0:
-            desc += " Pre-check did not find a link to the target domain."
         items.append(
-            "    <item>\n"
-            f"      <title>{title}</title>\n"
-            f"      <link>{xml_escape(row['url'])}</link>\n"
-            f"      <guid isPermaLink=\"true\">{xml_escape(row['url'])}</guid>\n"
-            f"      <pubDate>{pub}</pubDate>\n"
-            f"      <description>{xml_escape(desc)}</description>\n"
-            "    </item>"
+            "<item>"
+            f"<title>{xml_escape(row['url'])}</title>"
+            f"<link>{xml_escape(row['url'])}</link>"
+            f"<guid isPermaLink=\"true\">{xml_escape(row['url'])}</guid>"
+            "<description>Submitted URL listed for crawl discovery.</description>"
+            "</item>"
         )
     xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">\n'
-        "  <channel>\n"
-        "    <title>Backlink Indexer discovery feed</title>\n"
-        f"    <link>{xml_escape(hub['hub'])}</link>\n"
-        "    <description>Submitted backlink URLs listed for crawl discovery.</description>\n"
-        f"    <lastBuildDate>{now}</lastBuildDate>\n"
-        f'    <atom:link href="{xml_escape(hub["rss"])}" rel="self" type="application/rss+xml"/>\n'
-        f'    <atom:link href="{xml_escape(get_setting("websub_hub") or websub.DEFAULT_HUB)}" rel="hub"/>\n'
-        + "\n".join(items)
-        + "\n  </channel>\n</rss>\n"
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel>'
+        "<title>Backlink Indexer discovery feed</title>"
+        f"<link>{xml_escape(hub['hub'])}</link>"
+        "<description>Submitted URLs listed for crawl discovery. Listing is not indexing.</description>"
+        + "".join(items)
+        + "</channel></rss>"
     )
     return Response(xml, media_type="application/rss+xml")
 
 
 @app.get("/hub/atom.xml")
 async def hub_atom(request: Request):
-    rows = _hub_url_rows()
+    rows = _hub_rows()
     hub = hub_urls(request)
     now = utcnow()
     items = []
     for row in rows[:200]:
-        updated = row.get("updated_at") or row.get("created_at") or now
         items.append(
-            "  <entry>\n"
-            f"    <title>{xml_escape(row['url'])}</title>\n"
-            f'    <link href="{xml_escape(row["url"])}"/>\n'
-            f"    <id>{xml_escape(row['url'])}</id>\n"
-            f"    <updated>{xml_escape(updated)}</updated>\n"
-            "    <summary>Submitted backlink URL for crawl discovery.</summary>\n"
-            "  </entry>"
+            "<entry>"
+            f"<title>{xml_escape(row['url'])}</title>"
+            f'<link href="{xml_escape(row["url"])}"/>'
+            f"<id>{xml_escape(row['url'])}</id>"
+            f"<updated>{xml_escape(row.get('updated_at') or now)}</updated>"
+            "<summary>Submitted URL listed for crawl discovery.</summary>"
+            "</entry>"
         )
     xml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<feed xmlns="http://www.w3.org/2005/Atom">\n'
-        "  <title>Backlink Indexer discovery feed</title>\n"
-        f'  <link href="{xml_escape(hub["atom"])}" rel="self"/>\n'
-        f'  <link href="{xml_escape(hub["hub"])}"/>\n'
-        f'  <link href="{xml_escape(get_setting("websub_hub") or websub.DEFAULT_HUB)}" rel="hub"/>\n'
-        f"  <id>{xml_escape(hub['atom'])}</id>\n"
-        f"  <updated>{now}</updated>\n"
-        + "\n".join(items)
-        + "\n</feed>\n"
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<feed xmlns="http://www.w3.org/2005/Atom">'
+        "<title>Backlink Indexer discovery feed</title>"
+        f'<link href="{xml_escape(hub["atom"])}" rel="self"/>'
+        f"<updated>{now}</updated>"
+        f"<id>{xml_escape(hub['atom'])}</id>"
+        + "".join(items)
+        + "</feed>"
     )
     return Response(xml, media_type="application/atom+xml")
 
@@ -310,1025 +1056,14 @@ async def hub_atom(request: Request):
 async def indexnow_key_file(key: str):
     configured = get_setting("indexnow_key")
     if not configured or key != configured:
-        raise HTTPException(status_code=404, detail="Unknown IndexNow key")
-    return PlainTextResponse(configured, media_type="text/plain")
-
-
-# ---------------------------------------------------------------------------
-# API: projects, batches, urls
-# ---------------------------------------------------------------------------
-
-@app.get("/api/meta")
-async def api_meta(request: Request):
-    settings = get_settings()
-    return {
-        "version": __version__,
-        "hub": hub_urls(request),
-        "has_indexnow_key": bool(settings.get("indexnow_key")),
-        "has_serp_key": bool(settings.get("serp_api_key")),
-        "has_google_sa": google_indexing.service_account_present(),
-        "public_base_url": public_base(request),
-        "serp_provider": settings.get("serp_provider") or "serpapi",
-        "hub_include": settings.get("hub_include") or "all",
-    }
-
-
-@app.get("/api/projects")
-async def list_projects():
-    rows = get_conn().execute(
-        """
-        SELECT p.*,
-               (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id) AS url_count,
-               (SELECT COUNT(*) FROM batches b WHERE b.project_id = p.id) AS batch_count
-        FROM projects p
-        ORDER BY p.id DESC
-        """
-    ).fetchall()
-    return {"projects": rows_to_dicts(rows)}
-
-
-@app.post("/api/projects")
-async def create_project(payload: dict[str, Any]):
-    name = (payload.get("name") or "").strip() or "Untitled project"
-    target = (payload.get("target_domain") or get_setting("default_target_domain") or DEFAULT_TARGET_DOMAIN).strip()
-    target = registrable_host(target) or target
-    include = 1 if payload.get("include_subdomains", True) else 0
-    now = utcnow()
-    with tx() as conn:
-        cur = conn.execute(
-            """INSERT INTO projects (name, target_domain, include_subdomains, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (name, target, include, now, now),
-        )
-        pid = cur.lastrowid
-    return {"project": _get_project(pid)}
-
-
-@app.patch("/api/projects/{project_id}")
-async def update_project(project_id: int, payload: dict[str, Any]):
-    project = _get_project(project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    name = payload.get("name", project["name"])
-    target = payload.get("target_domain", project["target_domain"])
-    target = registrable_host(str(target).strip()) or project["target_domain"]
-    include = project["include_subdomains"]
-    if "include_subdomains" in payload:
-        include = 1 if payload.get("include_subdomains") else 0
-    with tx() as conn:
-        conn.execute(
-            "UPDATE projects SET name=?, target_domain=?, include_subdomains=?, updated_at=? WHERE id=?",
-            (str(name).strip() or project["name"], target, include, utcnow(), project_id),
-        )
-    return {"project": _get_project(project_id)}
-
-
-@app.delete("/api/projects/{project_id}")
-async def delete_project(project_id: int):
-    project = _get_project(project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    remaining = get_conn().execute("SELECT COUNT(*) AS c FROM projects").fetchone()["c"]
-    if remaining <= 1:
-        raise HTTPException(400, "Keep at least one project.")
-    with tx() as conn:
-        conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
-    return {"ok": True}
-
-
-@app.get("/api/projects/{project_id}/batches")
-async def list_batches(project_id: int):
-    if not _get_project(project_id):
-        raise HTTPException(404, "Project not found")
-    rows = get_conn().execute(
-        """
-        SELECT b.*, (SELECT COUNT(*) FROM urls u WHERE u.batch_id = b.id) AS url_count
-        FROM batches b WHERE b.project_id = ? ORDER BY b.id DESC
-        """,
-        (project_id,),
-    ).fetchall()
-    return {"batches": rows_to_dicts(rows)}
-
-
-@app.get("/api/projects/{project_id}/stats")
-async def project_stats(project_id: int):
-    if not _get_project(project_id):
-        raise HTTPException(404, "Project not found")
-    row = get_conn().execute(
-        """
-        SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN is_live = 1 THEN 1 ELSE 0 END) AS live,
-            SUM(CASE WHEN is_live = 0 THEN 1 ELSE 0 END) AS dead,
-            SUM(CASE WHEN has_link = 1 THEN 1 ELSE 0 END) AS has_link,
-            SUM(CASE WHEN has_link = 0 AND last_checked_at IS NOT NULL THEN 1 ELSE 0 END) AS no_link,
-            SUM(CASE WHEN noindex = 1 OR robots_disallow = 1 OR canonicalized_away = 1 THEN 1 ELSE 0 END) AS blocked,
-            SUM(CASE WHEN index_status IN ('indexed', 'manual_indexed') THEN 1 ELSE 0 END) AS indexed,
-            SUM(CASE WHEN index_status IN ('not_indexed', 'manual_not_indexed') THEN 1 ELSE 0 END) AS not_indexed,
-            SUM(CASE WHEN last_checked_at IS NULL THEN 1 ELSE 0 END) AS unchecked,
-            SUM(CASE WHEN submission_status = 'pending' THEN 1 ELSE 0 END) AS pending_submit
-        FROM urls WHERE project_id = ?
-        """,
-        (project_id,),
-    ).fetchone()
-    data = row_to_dict(row) or {}
-    for k, v in list(data.items()):
-        data[k] = int(v or 0)
-    return {"stats": data}
-
-
-@app.get("/api/projects/{project_id}/urls")
-async def list_urls(
-    project_id: int,
-    q: str = "",
-    batch_id: Optional[int] = None,
-    filter: str = "all",
-    offset: int = 0,
-    limit: int = 200,
-):
-    if not _get_project(project_id):
-        raise HTTPException(404, "Project not found")
-    where = ["u.project_id = ?"]
-    params: list[Any] = [project_id]
-    if batch_id:
-        where.append("u.batch_id = ?")
-        params.append(batch_id)
-    if q.strip():
-        where.append("u.url LIKE ?")
-        params.append(f"%{q.strip()}%")
-    clause = _filter_clause(filter, alias="u.")
-    if clause:
-        where.append(clause)
-    where_sql = " AND ".join(where)
-    total = get_conn().execute(
-        f"SELECT COUNT(*) AS c FROM urls u WHERE {where_sql}", params
-    ).fetchone()["c"]
-    rows = get_conn().execute(
-        f"""SELECT u.*, b.name AS batch_name
-            FROM urls u
-            LEFT JOIN batches b ON b.id = u.batch_id
-            WHERE {where_sql}
-            ORDER BY u.id DESC
-            LIMIT ? OFFSET ?""",
-        [*params, max(1, min(limit, 1000)), max(0, offset)],
-    ).fetchall()
-    items = []
-    for r in rows:
-        item = row_to_dict(r)
-        if item and item.get("link_details"):
-            try:
-                item["link_details"] = json.loads(item["link_details"])
-            except Exception:
-                pass
-        items.append(item)
-    return {"urls": items, "total": total, "offset": offset, "limit": limit}
-
-
-@app.post("/api/projects/{project_id}/urls")
-async def add_urls(project_id: int, payload: dict[str, Any]):
-    project = _get_project(project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    raw_list = payload.get("urls") or []
-    if isinstance(raw_list, str):
-        raw_lines = raw_list.splitlines()
-    else:
-        raw_lines = [str(x) for x in raw_list]
-    batch_name = (payload.get("batch_name") or "").strip() or f"Batch {utcnow()[:16].replace('T', ' ')} UTC"
-    return _ingest_urls(project_id, raw_lines, batch_name)
-
-
-@app.post("/api/projects/{project_id}/urls/upload")
-async def upload_urls(
-    project_id: int,
-    file: UploadFile = File(...),
-    batch_name: str = Form(""),
-):
-    project = _get_project(project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    content = await file.read()
-    try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1", errors="replace")
-    lines = _parse_upload(text, file.filename or "upload.txt")
-    name = batch_name.strip() or (file.filename or f"Upload {utcnow()[:16]}")
-    return _ingest_urls(project_id, lines, name)
-
-
-@app.delete("/api/urls")
-async def delete_urls(payload: dict[str, Any]):
-    ids = [int(i) for i in (payload.get("ids") or [])]
-    if not ids:
-        return {"deleted": 0}
-    with tx() as conn:
-        conn.execute(
-            f"DELETE FROM urls WHERE id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-    return {"deleted": len(ids)}
-
-
-@app.post("/api/urls/toggle-hub")
-async def toggle_hub(payload: dict[str, Any]):
-    ids = [int(i) for i in (payload.get("ids") or [])]
-    in_hub = 1 if payload.get("in_hub", True) else 0
-    if not ids:
-        return {"updated": 0}
-    with tx() as conn:
-        conn.execute(
-            f"UPDATE urls SET in_hub=?, updated_at=? WHERE id IN ({','.join('?' * len(ids))})",
-            [in_hub, utcnow(), *ids],
-        )
-    return {"updated": len(ids), "in_hub": bool(in_hub)}
-
-
-@app.post("/api/urls/mark-indexed")
-async def mark_indexed(payload: dict[str, Any]):
-    url_id = int(payload.get("id"))
-    indexed = bool(payload.get("indexed"))
-    status = "manual_indexed" if indexed else "manual_not_indexed"
-    now = utcnow()
-    with tx() as conn:
-        cur = conn.execute(
-            """UPDATE urls SET index_status=?, index_source='manual', index_note=?,
-               last_index_check_at=?, updated_at=? WHERE id=?""",
-            (status, "Manually marked by user.", now, now, url_id),
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(404, "URL not found")
-    return {"ok": True, "index_status": status}
-
-
-@app.get("/api/projects/{project_id}/export.csv")
-async def export_csv(project_id: int, filter: str = "all", q: str = "", batch_id: Optional[int] = None):
-    project = _get_project(project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    where = ["u.project_id = ?"]
-    params: list[Any] = [project_id]
-    if batch_id:
-        where.append("u.batch_id = ?")
-        params.append(batch_id)
-    if q.strip():
-        where.append("u.url LIKE ?")
-        params.append(f"%{q.strip()}%")
-    clause = _filter_clause(filter, alias="u.")
-    if clause:
-        where.append(clause)
-    rows = get_conn().execute(
-        f"""SELECT u.*, b.name AS batch_name
-            FROM urls u LEFT JOIN batches b ON b.id = u.batch_id
-            WHERE {' AND '.join(where)}
-            ORDER BY u.id ASC""",
-        params,
-    ).fetchall()
-    buf = io.StringIO()
-    fields = [
-        "id", "url", "final_url", "batch_name", "http_status", "is_live",
-        "fetch_error", "meta_robots", "x_robots_tag", "noindex",
-        "robots_disallow", "canonical", "canonicalized_away",
-        "has_link", "link_rel", "link_count", "in_hub",
-        "submission_status", "indexnow_status", "google_index_status",
-        "index_status", "index_source", "index_note",
-        "last_checked_at", "last_submitted_at", "last_index_check_at",
-        "created_at",
-    ]
-    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
-    writer.writeheader()
-    for r in rows:
-        d = row_to_dict(r) or {}
-        writer.writerow({k: d.get(k, "") for k in fields})
-    data = buf.getvalue().encode("utf-8-sig")
-    filename = f"backlink-indexer-{project['name'].replace(' ', '_')[:40]}.csv"
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-# ---------------------------------------------------------------------------
-# Jobs: precheck, indexnow, google, serp, hub ping
-# ---------------------------------------------------------------------------
-
-@app.post("/api/urls/precheck")
-async def start_precheck(payload: dict[str, Any]):
-    ids = _resolve_ids(payload)
-    if not ids:
-        raise HTTPException(400, "No URLs selected.")
-    job_id = _create_job("precheck", len(ids))
-    task = asyncio.create_task(_run_precheck(job_id, ids))
-    _jobs[job_id] = task
-    return {"job_id": job_id, "total": len(ids)}
-
-
-@app.post("/api/urls/indexnow")
-async def start_indexnow(payload: dict[str, Any], request: Request):
-    ids = _resolve_ids(payload)
-    if not ids:
-        raise HTTPException(400, "No URLs selected.")
-    job_id = _create_job("indexnow", len(ids))
-    task = asyncio.create_task(_run_indexnow(job_id, ids, public_base(request)))
-    _jobs[job_id] = task
-    return {"job_id": job_id, "total": len(ids)}
-
-
-@app.post("/api/urls/google-index")
-async def start_google_index(payload: dict[str, Any]):
-    ids = _resolve_ids(payload)
-    if not ids:
-        raise HTTPException(400, "No URLs selected.")
-    if not google_indexing.service_account_present():
-        raise HTTPException(
-            400,
-            "Upload a Google service-account JSON in Settings first. "
-            "This API only works for your own Search Console–verified site.",
-        )
-    job_id = _create_job("google-index", len(ids))
-    task = asyncio.create_task(_run_google_index(job_id, ids))
-    _jobs[job_id] = task
-    return {"job_id": job_id, "total": len(ids)}
-
-
-@app.post("/api/urls/check-indexed")
-async def start_check_indexed(payload: dict[str, Any]):
-    ids = _resolve_ids(payload)
-    if not ids:
-        raise HTTPException(400, "No URLs selected.")
-    settings = get_settings()
-    if not settings.get("serp_api_key") and (settings.get("serp_provider") or "") != "custom":
-        raise HTTPException(
-            400,
-            "No SERP API key is configured. Add one in Settings, or use the manual 'Mark indexed' toggle. "
-            "This tool will not invent index status.",
-        )
-    job_id = _create_job("check-indexed", len(ids))
-    task = asyncio.create_task(_run_check_indexed(job_id, ids))
-    _jobs[job_id] = task
-    return {"job_id": job_id, "total": len(ids)}
-
-
-@app.post("/api/hub/ping")
-async def ping_hub(request: Request):
-    hub = hub_urls(request)
-    if not hub["base"]:
-        raise HTTPException(400, "Set a public base URL in Settings before pinging.")
-    http = client()
-    hub_endpoint = get_setting("websub_hub") or websub.DEFAULT_HUB
-    websub_result = await websub.ping_websub(http, hub["rss"], hub_endpoint)
-    bing_result = await websub.ping_bing_sitemap(http, hub["sitemap"])
-    now = utcnow()
-    with tx() as conn:
-        conn.execute(
-            """INSERT INTO submission_log (url_id, method, status, detail, created_at)
-               VALUES (NULL, ?, ?, ?, ?)""",
-            (
-                "hub-ping",
-                "ok" if (websub_result.get("ok") or bing_result.get("ok")) else "error",
-                json.dumps({"websub": websub_result, "bing": bing_result}),
-                now,
-            ),
-        )
-        # Mark hub-listed URLs as submitted via hub if still pending.
-        conn.execute(
-            """UPDATE urls SET submission_status = CASE
-                    WHEN submission_status IN ('pending', '') THEN 'submitted_hub'
-                    ELSE submission_status
-               END,
-               last_submitted_at = COALESCE(last_submitted_at, ?),
-               updated_at = ?
-               WHERE in_hub = 1""",
-            (now, now),
-        )
-    return {
-        "websub": websub_result,
-        "bing_sitemap_ping": bing_result,
-        "google_sitemap_ping": {
-            "ok": False,
-            "detail": "Google's sitemap ping endpoint is deprecated and is not called.",
-        },
-        "hub": hub,
-    }
-
-
-@app.get("/api/jobs/{job_id}")
-async def get_job(job_id: str):
-    row = get_conn().execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if not row:
-        raise HTTPException(404, "Job not found")
-    return {"job": row_to_dict(row)}
-
-
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
-
-@app.get("/api/settings")
-async def read_settings(request: Request):
-    data = get_settings()
-    # Never echo secrets in full if we want... actually this is self-hosted and
-    # the settings page needs to show whether a key is set. Mask API keys.
-    masked = dict(data)
-    if masked.get("serp_api_key"):
-        masked["serp_api_key_set"] = True
-        masked["serp_api_key"] = _mask(masked["serp_api_key"])
-    else:
-        masked["serp_api_key_set"] = False
-    masked["google_sa_present"] = google_indexing.service_account_present()
-    if google_indexing.service_account_present():
-        try:
-            info = json.loads(SA_PATH.read_text())
-            masked["google_sa_email"] = info.get("client_email", "")
-        except Exception:
-            masked["google_sa_email"] = ""
-    else:
-        masked["google_sa_email"] = ""
-    masked["indexnow_key_url"] = (
-        indexnow.key_file_url(public_base(request), data.get("indexnow_key") or "")
-        if data.get("indexnow_key")
-        else ""
-    )
-    hosts = get_conn().execute("SELECT * FROM owned_hosts ORDER BY host").fetchall()
-    return {"settings": masked, "owned_hosts": rows_to_dicts(hosts), "hub": hub_urls(request)}
-
-
-@app.post("/api/settings")
-async def write_settings(payload: dict[str, Any], request: Request):
-    allowed = {
-        "public_base_url",
-        "indexnow_key",
-        "serp_provider",
-        "serp_api_key",
-        "serp_endpoint",
-        "websub_hub",
-        "hub_include",
-        "default_target_domain",
-    }
-    updates = {k: v for k, v in payload.items() if k in allowed}
-    if "serp_api_key" in updates and str(updates["serp_api_key"]).endswith("••••"):
-        # Masked value sent back unchanged — ignore.
-        updates.pop("serp_api_key")
-    if "serp_api_key" in updates and str(updates["serp_api_key"]).strip() == "":
-        updates["serp_api_key"] = ""
-    if "public_base_url" in updates:
-        updates["public_base_url"] = str(updates["public_base_url"] or "").rstrip("/")
-    if "default_target_domain" in updates:
-        updates["default_target_domain"] = registrable_host(str(updates["default_target_domain"]).strip()) or DEFAULT_TARGET_DOMAIN
-    if "indexnow_key" in updates:
-        key = str(updates["indexnow_key"]).strip()
-        if key and (len(key) < 8 or len(key) > 128):
-            raise HTTPException(400, "IndexNow key must be 8–128 characters.")
-        updates["indexnow_key"] = key
-    set_settings(updates)
-    return await read_settings(request)
-
-
-@app.post("/api/settings/indexnow/generate")
-async def generate_indexnow_key(request: Request):
-    key = indexnow.generate_key()
-    set_setting("indexnow_key", key)
-    return await read_settings(request)
-
-
-@app.post("/api/settings/owned-hosts")
-async def add_owned_host(payload: dict[str, Any]):
-    host = registrable_host((payload.get("host") or "").strip())
-    if not host:
-        raise HTTPException(400, "Enter a hostname such as example.com.")
-    notes = (payload.get("notes") or "").strip()
-    with tx() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO owned_hosts (host, notes, created_at) VALUES (?, ?, ?)",
-            (host, notes, utcnow()),
-        )
-        if notes:
-            conn.execute("UPDATE owned_hosts SET notes=? WHERE host=?", (notes, host))
-    hosts = get_conn().execute("SELECT * FROM owned_hosts ORDER BY host").fetchall()
-    return {"owned_hosts": rows_to_dicts(hosts)}
-
-
-@app.delete("/api/settings/owned-hosts/{host_id}")
-async def delete_owned_host(host_id: int):
-    with tx() as conn:
-        conn.execute("DELETE FROM owned_hosts WHERE id=?", (host_id,))
-    return {"ok": True}
-
-
-@app.post("/api/settings/google-sa")
-async def upload_google_sa(file: UploadFile = File(...)):
-    raw = await file.read()
-    try:
-        info = json.loads(raw.decode("utf-8"))
-    except Exception:
-        raise HTTPException(400, "File is not valid JSON.")
-    if info.get("type") != "service_account" or "private_key" not in info or "client_email" not in info:
-        raise HTTPException(400, "This does not look like a Google service-account JSON key.")
-    SA_PATH.write_text(json.dumps(info, indent=2))
-    try:
-        SA_PATH.chmod(0o600)
-    except Exception:
-        pass
-    return {"ok": True, "client_email": info.get("client_email")}
-
-
-@app.delete("/api/settings/google-sa")
-async def delete_google_sa():
-    if SA_PATH.exists():
-        SA_PATH.unlink()
-    return {"ok": True}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _get_project(project_id: int) -> Optional[dict]:
-    return row_to_dict(
-        get_conn().execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    )
-
-
-def _filter_clause(filter_name: str, alias: str = "") -> str:
-    a = alias
-    mapping = {
-        "live": f"{a}is_live = 1",
-        "dead": f"{a}is_live = 0",
-        "has_link": f"{a}has_link = 1",
-        "no_link": f"{a}has_link = 0 AND {a}last_checked_at IS NOT NULL",
-        "blocked": f"({a}noindex = 1 OR {a}robots_disallow = 1 OR {a}canonicalized_away = 1)",
-        "noindex": f"{a}noindex = 1",
-        "robots": f"{a}robots_disallow = 1",
-        "canonical": f"{a}canonicalized_away = 1",
-        "indexed": f"{a}index_status IN ('indexed', 'manual_indexed')",
-        "not_indexed": f"{a}index_status IN ('not_indexed', 'manual_not_indexed')",
-        "unknown_index": f"{a}index_status = 'unknown'",
-        "unchecked": f"{a}last_checked_at IS NULL",
-        "pending": f"{a}submission_status = 'pending'",
-        "in_hub": f"{a}in_hub = 1",
-    }
-    return mapping.get(filter_name, "")
-
-
-def _parse_upload(text: str, filename: str) -> list[str]:
-    lines: list[str] = []
-    lower = filename.lower()
-    if lower.endswith(".csv"):
-        reader = csv.reader(io.StringIO(text))
-        rows = list(reader)
-        if not rows:
-            return []
-        header = [c.strip().lower() for c in rows[0]]
-        url_idx = 0
-        for candidate in ("url", "urls", "link", "links", "page", "href"):
-            if candidate in header:
-                url_idx = header.index(candidate)
-                rows = rows[1:]
-                break
-        else:
-            # If the first cell looks like a header, skip it.
-            if header and not normalize_submitted(rows[0][0] if rows[0] else ""):
-                rows = rows[1:]
-        for row in rows:
-            if row and url_idx < len(row):
-                lines.append(row[url_idx])
-        return lines
-    return text.splitlines()
-
-
-def _ingest_urls(project_id: int, raw_lines: list[str], batch_name: str) -> dict:
-    seen: set[str] = set()
-    urls: list[str] = []
-    skipped = 0
-    for line in raw_lines:
-        # CSV-ish lines pasted in the textarea: take the first column.
-        piece = line.split(",")[0] if "," in line and not line.strip().startswith("http") else line
-        url = normalize_submitted(piece)
-        if not url:
-            if line.strip():
-                skipped += 1
-            continue
-        if url in seen:
-            continue
-        seen.add(url)
-        urls.append(url)
-    if not urls:
-        return {"added": 0, "duplicates": 0, "skipped": skipped, "batch_id": None, "total_in_batch": 0}
-    now = utcnow()
-    added = 0
-    duplicates = 0
-    with tx() as conn:
-        cur = conn.execute(
-            "INSERT INTO batches (project_id, name, created_at) VALUES (?, ?, ?)",
-            (project_id, batch_name, now),
-        )
-        batch_id = cur.lastrowid
-        for url in urls:
-            try:
-                conn.execute(
-                    """INSERT INTO urls (project_id, batch_id, url, in_hub, submission_status,
-                       index_status, created_at, updated_at)
-                       VALUES (?, ?, ?, 1, 'pending', 'unknown', ?, ?)""",
-                    (project_id, batch_id, url, now, now),
-                )
-                added += 1
-            except Exception:
-                duplicates += 1
-                # Still associate? leave the existing row as-is.
-    return {
-        "added": added,
-        "duplicates": duplicates,
-        "skipped": skipped,
-        "batch_id": batch_id,
-        "total_in_batch": added,
-    }
-
-
-def _hub_url_rows() -> list[dict]:
-    include = get_setting("hub_include") or "all"
-    extra = ""
-    if include == "live":
-        extra = "AND is_live = 1"
-    elif include == "has_link":
-        extra = "AND has_link = 1"
-    rows = get_conn().execute(
-        f"""SELECT url, updated_at, created_at, has_link, is_live, http_status
-            FROM urls
-            WHERE in_hub = 1 {extra}
-            ORDER BY id DESC"""
-    ).fetchall()
-    return rows_to_dicts(rows)
-
-
-def _rss_date(iso: Optional[str]) -> str:
-    if not iso:
-        return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
-    try:
-        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        return dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
-    except Exception:
-        return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        raise HTTPException(404, "Unknown IndexNow key")
+    return PlainTextResponse(configured)
 
 
 def _mask(value: str) -> str:
     if len(value) <= 8:
         return "••••••••"
     return value[:3] + "••••" + value[-2:]
-
-
-def _resolve_ids(payload: dict[str, Any]) -> list[int]:
-    if payload.get("ids"):
-        return [int(i) for i in payload["ids"]]
-    project_id = payload.get("project_id")
-    if not project_id:
-        return []
-    where = ["project_id = ?"]
-    params: list[Any] = [int(project_id)]
-    if payload.get("batch_id"):
-        where.append("batch_id = ?")
-        params.append(int(payload["batch_id"]))
-    if payload.get("filter") and payload["filter"] != "all":
-        clause = _filter_clause(payload["filter"])
-        if clause:
-            where.append(clause)
-    if payload.get("q"):
-        where.append("url LIKE ?")
-        params.append(f"%{payload['q']}%")
-    rows = get_conn().execute(
-        f"SELECT id FROM urls WHERE {' AND '.join(where)}", params
-    ).fetchall()
-    return [r["id"] for r in rows]
-
-
-def _create_job(job_type: str, total: int) -> str:
-    job_id = uuid.uuid4().hex
-    with tx() as conn:
-        conn.execute(
-            """INSERT INTO jobs (id, type, status, total, done_count, ok_count, failed_count, message, created_at)
-               VALUES (?, ?, 'running', ?, 0, 0, 0, '', ?)""",
-            (job_id, job_type, total, utcnow()),
-        )
-    return job_id
-
-
-def _update_job(job_id: str, **fields: Any) -> None:
-    if not fields:
-        return
-    assignments = ", ".join(f"{k}=?" for k in fields)
-    with tx() as conn:
-        conn.execute(f"UPDATE jobs SET {assignments} WHERE id=?", [*fields.values(), job_id])
-
-
-def _owned_host_set() -> set[str]:
-    rows = get_conn().execute("SELECT host FROM owned_hosts").fetchall()
-    hosts = {registrable_host(r["host"]) for r in rows}
-    # The public hub host is always "owned" for IndexNow of hub pages.
-    base = get_setting("public_base_url") or PUBLIC_BASE_URL
-    if base:
-        hosts.add(registrable_host(host_of(base)))
-    return {h for h in hosts if h}
-
-
-def _is_owned_url(url: str, owned: set[str]) -> bool:
-    host = registrable_host(host_of(url))
-    if host in owned:
-        return True
-    for h in owned:
-        if host == h or host.endswith("." + h):
-            return True
-    return False
-
-
-async def _run_precheck(job_id: str, ids: list[int]) -> None:
-    sem = asyncio.Semaphore(FETCH_CONCURRENCY)
-    robots_cache = RobotsCache()
-    ok = failed = 0
-    done = 0
-    http = client()
-
-    async def one(url_id: int) -> None:
-        nonlocal ok, failed, done
-        row = get_conn().execute(
-            """SELECT u.*, p.target_domain, p.include_subdomains
-               FROM urls u JOIN projects p ON p.id = u.project_id
-               WHERE u.id=?""",
-            (url_id,),
-        ).fetchone()
-        if not row:
-            done += 1
-            failed += 1
-            return
-        async with sem:
-            result = await precheck_url(
-                http,
-                row["url"],
-                row["target_domain"],
-                bool(row["include_subdomains"]),
-                robots_cache,
-            )
-        now = utcnow()
-        with tx() as conn:
-            conn.execute(
-                """UPDATE urls SET
-                    final_url=?, http_status=?, is_live=?, fetch_error=?, content_type=?,
-                    meta_robots=?, x_robots_tag=?, noindex=?, robots_disallow=?,
-                    canonical=?, canonicalized_away=?, has_link=?, link_rel=?,
-                    link_count=?, link_details=?, last_checked_at=?, updated_at=?
-                   WHERE id=?""",
-                (
-                    result.get("final_url"),
-                    result.get("http_status"),
-                    1 if result.get("is_live") else 0 if result.get("is_live") is not None else None,
-                    result.get("fetch_error"),
-                    result.get("content_type"),
-                    result.get("meta_robots"),
-                    result.get("x_robots_tag"),
-                    1 if result.get("noindex") else 0,
-                    None if result.get("robots_disallow") is None else (1 if result.get("robots_disallow") else 0),
-                    result.get("canonical"),
-                    1 if result.get("canonicalized_away") else 0,
-                    1 if result.get("has_link") else 0,
-                    result.get("link_rel") or "none",
-                    result.get("link_count") or 0,
-                    result.get("link_details_json") or "[]",
-                    now,
-                    now,
-                    url_id,
-                ),
-            )
-        done += 1
-        if result.get("fetch_error") and not result.get("http_status"):
-            failed += 1
-        else:
-            ok += 1
-        _update_job(job_id, done_count=done, ok_count=ok, failed_count=failed)
-
-    try:
-        await asyncio.gather(*[one(i) for i in ids])
-        _update_job(
-            job_id,
-            status="done",
-            done_count=done,
-            ok_count=ok,
-            failed_count=failed,
-            finished_at=utcnow(),
-            message=f"Checked {done} URLs ({ok} fetched, {failed} failed).",
-        )
-    except Exception as exc:
-        _update_job(job_id, status="error", message=str(exc), finished_at=utcnow())
-
-
-async def _run_indexnow(job_id: str, ids: list[int], base: str) -> None:
-    key = get_setting("indexnow_key")
-    if not key:
-        _update_job(
-            job_id,
-            status="error",
-            message="Generate or paste an IndexNow key in Settings first.",
-            finished_at=utcnow(),
-        )
-        return
-    owned = _owned_host_set()
-    rows = get_conn().execute(
-        f"SELECT * FROM urls WHERE id IN ({','.join('?' * len(ids))})",
-        ids,
-    ).fetchall()
-    eligible = []
-    skipped = []
-    for r in rows:
-        if _is_owned_url(r["url"], owned):
-            eligible.append(r)
-        else:
-            skipped.append(r)
-    # Always consider the public hub documents — those are the pages the user
-    # actually controls. Skip loopback bases; IndexNow cannot verify them.
-    hub_targets = []
-    base_host = registrable_host(host_of(base)) if base else ""
-    if base and base_host and base_host not in {"127.0.0.1", "localhost", "::1"}:
-        hub_targets = [
-            f"{base}/hub",
-            f"{base}/hub/sitemap.xml",
-            f"{base}/hub/feed.xml",
-            f"{base}/hub/atom.xml",
-        ]
-
-    now = utcnow()
-    ok = failed = 0
-    details = []
-    http = client()
-
-    groups = indexnow.hosts_for_urls([r["url"] for r in eligible] + hub_targets)
-    done = 0
-    total_attempted = sum(len(v) for v in groups.values())
-    _update_job(job_id, total=max(total_attempted, 1), message="Submitting owned URLs via IndexNow…")
-
-    if not groups:
-        msg = (
-            "IndexNow only accepts URLs on hosts where you host the key file. "
-            "None of the selected URLs are on an owned host or your public hub domain. "
-            f"Skipped {len(skipped)} third-party backlink URL(s)."
-        )
-        _update_job(job_id, status="done", message=msg, done_count=0, finished_at=now)
-        return
-
-    for host, url_list in groups.items():
-        key_location = f"https://{host}/{key}.txt"
-        # If this is the hub host and public_base_url is set, use that exact key location.
-        if base and registrable_host(host_of(base)) == registrable_host(host):
-            key_location = indexnow.key_file_url(base, key)
-        result = await indexnow.submit(http, url_list, key, key_location)
-        details.append(result)
-        status = "ok" if result.get("ok") else "error"
-        if result.get("ok"):
-            ok += len(url_list)
-        else:
-            failed += len(url_list)
-        done += len(url_list)
-        with tx() as conn:
-            for url in url_list:
-                conn.execute(
-                    """UPDATE urls SET indexnow_status=?, last_submitted_at=?, updated_at=?,
-                       submission_status = CASE
-                         WHEN submission_status IN ('pending', 'submitted_hub') THEN 'submitted_indexnow'
-                         ELSE submission_status
-                       END
-                       WHERE url=?""",
-                    (result.get("detail"), now, now, url),
-                )
-                conn.execute(
-                    """INSERT INTO submission_log (url_id, method, status, detail, created_at)
-                       SELECT id, 'indexnow', ?, ?, ? FROM urls WHERE url=?""",
-                    (status, result.get("detail"), now, url),
-                )
-        _update_job(job_id, done_count=done, ok_count=ok, failed_count=failed)
-
-    skipped_note = ""
-    if skipped:
-        skipped_note = (
-            f" Skipped {len(skipped)} third-party URL(s) — IndexNow cannot submit pages "
-            "on hosts you do not control. Add the host under Settings → Owned hosts "
-            "only if you actually control it and can serve the key file there."
-        )
-    _update_job(
-        job_id,
-        status="done",
-        finished_at=utcnow(),
-        message=f"IndexNow submitted {ok} URL(s), {failed} failed.{skipped_note}",
-    )
-
-
-async def _run_google_index(job_id: str, ids: list[int]) -> None:
-    rows = get_conn().execute(
-        f"SELECT * FROM urls WHERE id IN ({','.join('?' * len(ids))})",
-        ids,
-    ).fetchall()
-    owned = _owned_host_set()
-    ok = failed = done = 0
-    skipped = 0
-    # The Google API client is synchronous; run in a thread to avoid blocking.
-    loop = asyncio.get_event_loop()
-    for r in rows:
-        if owned and not _is_owned_url(r["url"], owned):
-            # Still attempt if user explicitly selected it, but warn — the API
-            # will reject third-party URLs. We skip unless the host is marked owned
-            # OR owned list is empty (then we try and let Google reject).
-            skipped += 1
-            done += 1
-            with tx() as conn:
-                conn.execute(
-                    "UPDATE urls SET google_index_status=?, updated_at=? WHERE id=?",
-                    (
-                        "Skipped: host is not in Owned hosts. The Google Indexing API is own-site only.",
-                        utcnow(),
-                        r["id"],
-                    ),
-                )
-            _update_job(job_id, done_count=done, ok_count=ok, failed_count=failed)
-            continue
-        result = await loop.run_in_executor(None, google_indexing.publish_url, r["url"])
-        now = utcnow()
-        status = "ok" if result.get("ok") else "error"
-        detail = result.get("detail") or ""
-        if result.get("ok"):
-            ok += 1
-        else:
-            failed += 1
-        done += 1
-        with tx() as conn:
-            conn.execute(
-                """UPDATE urls SET google_index_status=?, last_submitted_at=?, updated_at=?,
-                   submission_status = CASE
-                     WHEN ? = 'ok' THEN 'submitted_google'
-                     ELSE submission_status
-                   END
-                   WHERE id=?""",
-                (detail, now, now, status, r["id"]),
-            )
-            conn.execute(
-                """INSERT INTO submission_log (url_id, method, status, detail, created_at)
-                   VALUES (?, 'google-indexing-api', ?, ?, ?)""",
-                (r["id"], status, detail, now),
-            )
-        _update_job(job_id, done_count=done, ok_count=ok, failed_count=failed)
-        await asyncio.sleep(0.2)
-    _update_job(
-        job_id,
-        status="done",
-        finished_at=utcnow(),
-        message=(
-            f"Google Indexing API: {ok} submitted, {failed} failed, {skipped} skipped "
-            "(own verified site only)."
-        ),
-    )
-
-
-async def _run_check_indexed(job_id: str, ids: list[int]) -> None:
-    settings = get_settings()
-    provider = settings.get("serp_provider") or "serpapi"
-    api_key = settings.get("serp_api_key") or ""
-    endpoint = settings.get("serp_endpoint") or ""
-    rows = get_conn().execute(
-        f"SELECT * FROM urls WHERE id IN ({','.join('?' * len(ids))})",
-        ids,
-    ).fetchall()
-    ok = failed = done = 0
-    http = client()
-    for r in rows:
-        result = await serp.check_indexed(http, r["url"], provider, api_key, endpoint)
-        now = utcnow()
-        if not result.get("ok") or result.get("indexed") is None:
-            failed += 1
-            done += 1
-            with tx() as conn:
-                conn.execute(
-                    "UPDATE urls SET index_note=?, last_index_check_at=?, updated_at=? WHERE id=?",
-                    (result.get("detail") or "SERP check failed", now, now, r["id"]),
-                )
-            _update_job(job_id, done_count=done, ok_count=ok, failed_count=failed, message=result.get("detail"))
-            continue
-        indexed = bool(result["indexed"])
-        status = "indexed" if indexed else "not_indexed"
-        note = result.get("detail") or ""
-        hits = result.get("hits") or []
-        if hits:
-            note += " Hits: " + ", ".join(hits[:3])
-        with tx() as conn:
-            conn.execute(
-                """UPDATE urls SET index_status=?, index_source=?, index_note=?,
-                   last_index_check_at=?, updated_at=? WHERE id=?""",
-                (status, provider, note, now, now, r["id"]),
-            )
-        ok += 1
-        done += 1
-        _update_job(job_id, done_count=done, ok_count=ok, failed_count=failed)
-        await asyncio.sleep(0.3)
-    _update_job(
-        job_id,
-        status="done",
-        finished_at=utcnow(),
-        message=f"Index checks finished: {ok} ok, {failed} failed. Status is never invented.",
-    )
 
 
 if __name__ == "__main__":

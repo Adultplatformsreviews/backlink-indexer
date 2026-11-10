@@ -1,3 +1,3 @@
 """Backlink Indexer — self-hosted crawl discovery and pre-check tool."""
 
-__version__ = "1.0.0"
+__version__ = "1.4.0"

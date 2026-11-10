@@ -1,0 +1,14 @@
+{% extends "layout.html" %}
+{% block title %}Sign up · Backlink Indexer{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>Create an account</h1>
+  <p class="sub">The first account is the operator and can save IndexNow, SERP, and Google keys. New accounts start on the Free tariff with starter tokens.</p>
+  <form method="post" action="/signup">
+    <label class="field">Username <input name="username" autocomplete="username" required></label>
+    <label class="field">Password <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+    <button class="btn red" type="submit">Sign up</button>
+  </form>
+  <p class="sub">Already registered? <a href="/login">Log in</a></p>
+</section>
+{% endblock %}

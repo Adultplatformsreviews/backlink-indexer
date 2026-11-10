@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+{% block title %}Tools · Backlink Indexer{% endblock %}
+{% block content %}
+<h1 class="page-title">Tools</h1>
+<div class="grid">
+  <article class="card"><h2>Discovery hub</h2><p class="sub">Public HTML, sitemap, and RSS on a domain you control. <a href="{{ hub.hub }}">Open hub</a></p></article>
+  <article class="card"><h2>IndexNow</h2><p class="sub">Bing and Yandex accept IndexNow only for hosts where you serve the key file. Third-party backlinks are skipped.</p></article>
+  <article class="card"><h2>Google Indexing API</h2><p class="sub">Own verified site only. A successful publish is “Submitted”, not “Indexed”.</p></article>
+  <article class="card"><h2>SERP check</h2><p class="sub">Optional. Without a key, Google stays Unknown and you can mark a result you checked yourself.</p></article>
+</div>
+{% if user.is_admin %}<p><a class="btn" href="/app/settings">Operator settings</a></p>{% endif %}
+{% endblock %}

@@ -1,0 +1,10 @@
+{% extends "layout.html" %}
+{% block title %}Notifications · Backlink Indexer{% endblock %}
+{% block content %}
+<h1 class="page-title">Notifications</h1>
+{% for item in items %}
+<article class="card"><p>{{ item.message }}</p><p class="sub">{{ fmt_date(item.created_at) }}</p></article>
+{% else %}
+<p class="empty">No notifications yet. The daily queue writes one after it processes links.</p>
+{% endfor %}
+{% endblock %}

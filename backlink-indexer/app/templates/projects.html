@@ -1,0 +1,98 @@
+{% extends "layout.html" %}
+{% block title %}Projects · Backlink Indexer{% endblock %}
+{% block content %}
+<p class="crumb">Account / {% if archived_view %}Archive{% else %}Projects{% endif %}</p>
+<h1 class="page-title">{% if archived_view %}Archive{% else %}Projects{% endif %} <em>{{ projects|length }}</em></h1>
+<p class="honest">Confirmed index counts only. This app cannot force Google, Bing, or Yandex to index a third-party page.</p>
+{% if not archived_view %}
+<section class="hero">
+  <div>
+    <div class="k">Tariff</div>
+    <div class="v">{{ user.plan_name }}</div>
+    <div class="s">{% if user.plan_until %}Valid until {{ fmt_date(user.plan_until) }}{% else %}No paid term{% endif %} · <a href="/app/plans">Choose a tariff</a></div>
+  </div>
+  <div>
+    <div class="k">Projects</div>
+    <div class="v">{{ speed.projects }} <span>of {{ user.project_limit }}</span></div>
+    <div class="meter"><i style="width: {{ (100 * speed.projects / user.project_limit) if user.project_limit else 0 }}%"></i></div>
+  </div>
+  <div>
+    <div class="k">Sending / checking speed</div>
+    <div class="v">{{ speed.used }} <span>/ day</span></div>
+    <div class="s good">Free {{ speed.free }} · distribute</div>
+  </div>
+  <div>
+    <div class="k">Token balance</div>
+    <div class="v">{{ user.token_balance }}</div>
+    <a class="btn white" href="/app/plans">Top up</a>
+  </div>
+</section>
+<div class="tabs">
+  <a class="tab {{ 'on' if not selected_type else '' }}" href="/app">All <i>{{ counts.all }}</i></a>
+  <a class="tab {{ 'on' if selected_type == 'indexing' else '' }}" href="/app?type=indexing">Indexing <i>{{ counts.indexing }}</i></a>
+  <a class="tab {{ 'on' if selected_type == 'instant' else '' }}" href="/app?type=instant">Instant indexing <i>{{ counts.instant }}</i></a>
+  <a class="tab {{ 'on' if selected_type == 'check' else '' }}" href="/app?type=check">Indexing check <i>{{ counts.check }}</i></a>
+  <form class="search" method="get" action="/app"><input name="q" value="{{ q }}" placeholder="Project name or website address"></form>
+</div>
+{% endif %}
+{% for project in projects %}
+<article class="pcard">
+  <div class="pcard-top">
+    <div class="ring" aria-label="{{ project.progress }} percent handled">
+      <svg viewBox="0 0 36 36"><circle class="ring-bg" cx="18" cy="18" r="15.5" pathLength="100"></circle>
+        <circle class="ring-fg" cx="18" cy="18" r="15.5" pathLength="100" stroke-dasharray="{{ project.progress }} 100"></circle></svg>
+      <strong>{{ project.progress }}%</strong>
+    </div>
+    <div>
+      <div class="badges">
+        <span class="badge type-{{ project.project_type }}">{{ project.type_label }}</span>
+        <span class="badge run {{ project.run_status }}">{{ project.run_label }}</span>
+      </div>
+      <h2><a href="/app/projects/{{ project.id }}">{{ project.name }}</a></h2>
+      <p class="sub">External links · {{ fmt_date(project.created_at) }} · {{ project.target_domain }}</p>
+      <div class="chips">
+        <span class="chip">Queue <b>{{ project.queued }}</b></span>
+        {% if project.run_status != 'archived' %}
+        <form class="chip speed-form" method="post" action="/app/projects/{{ project.id }}/speed?from=list">
+          Speed <input name="daily_speed" type="number" min="1" value="{{ project.daily_speed }}" aria-label="Daily speed"> /day
+          <button class="btn" type="submit">Save</button>
+        </form>
+        {% else %}
+        <span class="chip">Speed <b>{{ project.daily_speed }}/day</b></span>
+        {% endif %}
+        <span class="chip">Price <b>{{ token_cost }} token</b></span>
+        <span class="chip engines" title="Confirmed indexed only. Unknown results are not counted.">
+          <span>G <b>{{ project.google_indexed }}</b></span>
+          <span>Y <b>{{ project.yandex_indexed }}</b></span>
+          <span>B <b>{{ project.bing_indexed }}</b></span>
+        </span>
+      </div>
+    </div>
+    <div>
+      <div class="sent"><b>{{ project.sent }}</b> sent of {{ project.total }}</div>
+      <div class="side-actions">
+        {% if project.run_status == 'running' %}
+        <form method="post" action="/app/projects/{{ project.id }}/stop"><button class="btn stop" type="submit">Stop</button></form>
+        {% elif project.run_status == 'stopped' %}
+        <form method="post" action="/app/projects/{{ project.id }}/resume"><button class="btn" type="submit">Resume</button></form>
+        {% endif %}
+        <details class="menu">
+          <summary aria-label="Project menu">···</summary>
+          <div>
+            <a href="/app/projects/{{ project.id }}">Open</a>
+            {% if project.run_status == 'archived' %}
+            <form method="post" action="/app/projects/{{ project.id }}/unarchive"><button type="submit">Restore</button></form>
+            {% else %}
+            <form method="post" action="/app/projects/{{ project.id }}/archive"><button type="submit">Archive</button></form>
+            {% endif %}
+            <form method="post" action="/app/projects/{{ project.id }}/delete" onsubmit="return confirm('Delete this project and its links?')"><button type="submit">Delete</button></form>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+</article>
+{% else %}
+<p class="empty">{% if archived_view %}No archived projects.{% else %}No projects yet. Use Add project to paste links.{% endif %}</p>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "layout.html" %}
+{% block title %}Plans · Backlink Indexer{% endblock %}
+{% block content %}
+<h1 class="page-title">Plans</h1>
+<div class="card">
+  <p>Tariff <strong>{{ user.plan_name }}</strong></p>
+  <p>Projects {{ speed.projects }} of {{ user.project_limit }} · speed used {{ speed.used }} / {{ speed.cap }} per day · free {{ speed.free }}</p>
+  <p>Token balance <strong>{{ user.token_balance }}</strong></p>
+  <p class="sub">Card payments are not connected. Tokens are spent when a URL is accepted into a project.</p>
+  {% if user.is_admin %}
+  <form method="post" action="/app/plans/topup">
+    <label class="field">Add tokens to this operator account <input name="amount" type="number" min="1" value="100"></label>
+    <button class="btn red" type="submit">Add tokens</button>
+  </form>
+  {% else %}
+  <p>Ask the operator to top up this account.</p>
+  {% endif %}
+</div>
+{% endblock %}

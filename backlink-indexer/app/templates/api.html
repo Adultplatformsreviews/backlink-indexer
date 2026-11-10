@@ -1,0 +1,22 @@
+{% extends "layout.html" %}
+{% block title %}API · Backlink Indexer{% endblock %}
+{% block content %}
+<h1 class="page-title">API</h1>
+<div class="card">
+  {% if new_key %}
+  <p class="notice">Copy this key now. It is stored only as a hash.</p>
+  <p><code>{{ new_key }}</code></p>
+  {% elif key_prefix %}
+  <p>A key is active. Prefix <code>{{ key_prefix }}</code>.</p>
+  {% else %}
+  <p>No API key yet.</p>
+  {% endif %}
+  <form method="post" action="/app/api/rotate" style="display:inline"><button class="btn red" type="submit">Generate key</button></form>
+  <form method="post" action="/app/api/revoke" style="display:inline"><button class="btn" type="submit">Revoke</button></form>
+  <pre>curl -H "Authorization: Bearer YOUR_KEY" {{ base }}/api/v1/credits
+curl -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"Demo","project_type":"indexing","target_domain":"example.com","daily_speed":10,"urls":["https://example.com/a"]}' \
+  {{ base }}/api/v1/campaigns</pre>
+  <p class="sub">Reports count confirmed indexed URLs only. They never guess.</p>
+</div>
+{% endblock %}

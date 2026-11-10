@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Backlink Indexer{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@450;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topnav">
+    <button class="menu-toggle" type="button" id="menuToggle" aria-label="Menu">☰</button>
+    <a class="brand" href="/app"><span class="mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="22" height="22"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="16" cy="16" r="4" fill="currentColor"/></svg>
+    </span>Backlink <b>Indexer</b></a>
+    <nav class="top-links">
+      <a href="/app" class="{{ 'on' if active == 'projects' else '' }}">Projects</a>
+      <a href="/pricing">Pricing</a>
+      <a href="/hub">Discovery hub</a>
+      <a href="/app/tools">Tools</a>
+      <a href="/app/api">API</a>
+      <a href="/app/tickets">Support</a>
+    </nav>
+    <div class="top-spacer"></div>
+    {% if user %}
+      <a class="token-pill" href="/app/plans">◆ <strong>{{ user.token_balance }}</strong></a>
+      <a class="user-pill" href="/app/plans">{{ user.username }}</a>
+      <form method="post" action="/logout"><button class="btn ghost" style="color:#fff;border-color:#333" type="submit">Log out</button></form>
+    {% else %}
+      <a href="/login">Log in</a>
+      <a class="btn red" href="/signup">Sign up</a>
+    {% endif %}
+  </header>
+  <div class="app-frame">
+    {% if user %}
+    <aside class="sidebar" id="sidebar">
+      <a class="add-btn" href="/app/new">+ Add project</a>
+      <a class="side-link {{ 'on' if active == 'projects' else '' }}" href="/app">Projects <span>{{ projects_count }}</span></a>
+      <a class="side-link {{ 'on' if active == 'archive' else '' }}" href="/app/archive">Archive <span>{{ archive_count }}</span></a>
+      <div class="side-label">ACCOUNT</div>
+      <a class="side-link {{ 'on' if active == 'plans' else '' }}" href="/app/plans">Plans{% if user.plan_name %} · {{ user.plan_name }}{% endif %}</a>
+      <a class="side-link {{ 'on' if active == 'affiliate' else '' }}" href="/app/affiliate">Affiliate program</a>
+      <a class="side-link {{ 'on' if active == 'tools' else '' }}" href="/app/tools">Tools</a>
+      <div class="side-label">SUPPORT</div>
+      <a class="side-link {{ 'on' if active == 'notifications' else '' }}" href="/app/notifications">Notifications{% if unread %} <span>{{ unread }}</span>{% endif %}</a>
+      <a class="side-link {{ 'on' if active == 'tickets' else '' }}" href="/app/tickets">Tickets</a>
+      <a class="side-link {{ 'on' if active == 'api' else '' }}" href="/app/api">API</a>
+      {% if user.is_admin %}<a class="side-link {{ 'on' if active == 'settings' else '' }}" href="/app/settings">Settings</a>{% endif %}
+    </aside>
+    {% endif %}
+    <main class="content">
+      {% if ephemeral %}
+      <div class="storage-banner" id="storageBanner">
+        <strong>Data is not persistent on this host.</strong>
+        {% if database_error %}
+          Postgres is configured{% if database_env %} via <code>{{ database_env }}</code>{% endif %} but the app could not connect ({{ database_error }}). Accounts and projects will disappear when this instance is replaced.
+        {% else %}
+          This deployment has no Postgres URL. Accounts, projects, and the public hub can disappear when a server instance is replaced. In the Vercel Storage tab, attach Neon and redeploy so one of <code>DATABASE_URL</code>, <code>POSTGRES_URL</code>, or <code>DATABASE_URL_UNPOOLED</code> is set.
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

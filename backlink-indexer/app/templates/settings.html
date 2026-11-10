@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+{% block title %}Settings · Backlink Indexer{% endblock %}
+{% block content %}
+<h1 class="page-title">Settings</h1>
+{% if forbidden %}
+<p>Only the operator account (the first signup) can change IndexNow, SERP, and Google keys.</p>
+{% else %}
+<form class="card" method="post" action="/app/settings">
+  <input type="hidden" name="action" value="save">
+  <label class="field">Public base URL <input name="public_base_url" value="{{ settings.public_base_url }}" placeholder="https://indexer.example.com"></label>
+  <label class="field">Default target domain <input name="default_target_domain" value="{{ settings.default_target_domain }}"></label>
+  <label class="field">WebSub hub <input name="websub_hub" value="{{ settings.websub_hub }}"></label>
+  <label class="field">Hub includes
+    <select name="hub_include">
+      {% for value, label in [('all','All in-hub URLs'),('live','Live pages'),('has_link','Pages with a target link')] %}
+      <option value="{{ value }}" {% if settings.hub_include == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field">IndexNow key <input name="indexnow_key" value="{{ settings.indexnow_key }}"></label>
+  <label class="field">Tokens per URL <input name="tokens_per_url" value="{{ settings.tokens_per_url }}"></label>
+  <label class="field">SERP provider
+    <select name="serp_provider">
+      {% for value in ['serpapi','valueserp','searchapi','custom'] %}
+      <option value="{{ value }}" {% if settings.serp_provider == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field">SERP API key <input name="serp_api_key" value="{{ settings.serp_api_key }}" placeholder="Leave the masked value to keep the current key"></label>
+  <label class="field">Custom SERP endpoint <input name="serp_endpoint" value="{{ settings.serp_endpoint }}"></label>
+  <button class="btn red" type="submit">Save</button>
+</form>
+<form method="post" action="/app/settings"><input type="hidden" name="action" value="gen-indexnow"><button class="btn" type="submit">Generate IndexNow key</button></form>
+<form class="card" method="post" action="/app/settings">
+  <input type="hidden" name="action" value="add-host">
+  <label class="field">Owned host <input name="host" placeholder="example.com"></label>
+  <button class="btn" type="submit">Add host</button>
+  <ul>
+    {% for host in hosts %}
+    <li>{{ host.host }}
+      <button class="btn" type="submit" name="action" value="delete-host" onclick="this.form.host_id.value='{{ host.id }}'">Remove</button>
+    </li>
+    {% endfor %}
+  </ul>
+  <input type="hidden" name="host_id" value="0">
+</form>
+<div class="card">
+  <h2>Google service account</h2>
+  <p class="sub">{% if sa_email %}Saved for {{ sa_email }}. Own verified site only.{% else %}No service account stored.{% endif %}</p>
+  <form method="post" action="/app/settings/google-sa" enctype="multipart/form-data">
+    <input type="file" name="file" accept="application/json,.json" required>
+    <button class="btn" type="submit">Upload JSON</button>
+  </form>
+  <form method="post" action="/app/settings"><input type="hidden" name="action" value="delete-sa"><button class="btn" type="submit">Remove</button></form>
+</div>
+<p class="sub">Database: {% if ephemeral %}not persistent{% if database_env %} ({{ database_env }} {{ database_error }}){% endif %}{% else %}persistent via {{ database_env }}{% endif %}.</p>
+{% endif %}
+{% endblock %}

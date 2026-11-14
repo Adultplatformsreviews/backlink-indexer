@@ -462,6 +462,10 @@ def test_blank_email_operator_is_upgraded_on_login(client, monkeypatch):
     assert "Unlimited" in page.text
     assert "0 of 100 used today" not in page.text
     assert "Free 100" not in page.text
+    assert "left" not in page.text
+    plans = client.get("/app/plans")
+    assert "Engine quota left today" not in plans.text
+    assert "10000 left" not in plans.text
     row = get_conn().execute(
         "SELECT email, is_admin, plan_name FROM users WHERE username = 'muhammadzeeshanhaideroffical'"
     ).fetchone()

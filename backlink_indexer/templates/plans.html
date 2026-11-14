@@ -9,12 +9,6 @@
   {% else %}
   <p><strong>{{ usage.label }}</strong>. You can add 100 URLs each calendar day. The count resets daily.</p>
   {% endif %}
-  <h2>Engine quota left today</h2>
-  <ul>
-    {% for row in engine_quotas %}
-    <li>{{ row.label }}: {{ row.remaining }} of {{ row.limit }}</li>
-    {% endfor %}
-  </ul>
   <p class="sub">Google Indexing API defaults to 200/day. Bing Webmaster is 10,000/day. IndexNow fair use here is 10,000/day. A submission is not an index confirmation.</p>
 </div>
 {% endblock %}

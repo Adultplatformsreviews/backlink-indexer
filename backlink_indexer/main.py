@@ -38,7 +38,7 @@ from .auth import (
 from .limits import urls_used_today
 from .email_login import consume_reset_token, issue_reset
 from .mailer import describe_mailer
-from .config import DEFAULT_TARGET_DOMAIN, PUBLIC_BASE_URL, SA_PATH
+from .config import PUBLIC_BASE_URL, SA_PATH
 from .database import (
     bootstrap_db,
     close_conn,
@@ -522,7 +522,6 @@ async def new_project_page(request: Request):
         active="projects",
         speed=_account_speed(user),
         default_speed=max(1, min(10, free or 1)),
-        default_target=get_setting("default_target_domain") or DEFAULT_TARGET_DOMAIN,
         token_cost=get_setting("tokens_per_url") or "1",
         engines=engine_choices(None),
     )
@@ -550,7 +549,7 @@ async def create_project_route(
     user, redirect = _need(request)
     if redirect:
         return redirect
-    target = registrable_host(target_domain) or get_setting("default_target_domain") or DEFAULT_TARGET_DOMAIN
+    target = registrable_host(target_domain) or ""
     project, error = create_project(
         user,
         name=name,
@@ -572,7 +571,6 @@ async def create_project_route(
             error=error,
             speed=_account_speed(user),
             default_speed=daily_speed,
-            default_target=target,
             token_cost=get_setting("tokens_per_url") or "1",
             form={"name": name, "project_type": project_type, "urls": urls},
             engines=engine_choices(posted_engines(engines_set, use_google, use_bing, use_yandex, use_indexnow)),
@@ -1058,7 +1056,6 @@ async def save_settings(
     request: Request,
     action: str = Form("save"),
     public_base_url: str = Form(""),
-    default_target_domain: str = Form(""),
     websub_hub: str = Form(""),
     hub_include: str = Form("all"),
     indexnow_key: str = Form(""),
@@ -1107,7 +1104,6 @@ async def save_settings(
         return _notice("/app/settings", "Google service account removed.")
     updates = {
         "public_base_url": public_base_url.strip().rstrip("/"),
-        "default_target_domain": registrable_host(default_target_domain) or DEFAULT_TARGET_DOMAIN,
         "websub_hub": websub_hub.strip() or websub.DEFAULT_HUB,
         "hub_include": hub_include if hub_include in {"all", "live", "has_link"} else "all",
         "serp_provider": serp_provider if serp_provider in {"serpapi", "valueserp", "searchapi", "custom"} else "serpapi",
@@ -1207,7 +1203,7 @@ async def v1_create(request: Request):
     if not user:
         raise HTTPException(401, "Send Authorization: Bearer <api key>.")
     payload = await request.json()
-    target = registrable_host(str(payload.get("target_domain") or "")) or DEFAULT_TARGET_DOMAIN
+    target = registrable_host(str(payload.get("target_domain") or "")) or ""
     project, error = create_project(
         user,
         name=str(payload.get("name") or ""),

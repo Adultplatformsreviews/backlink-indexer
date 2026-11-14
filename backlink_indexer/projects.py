@@ -117,9 +117,8 @@ def list_projects(
         where.append("p.project_type = ?")
         params.append(project_type)
     if q.strip():
-        where.append("(p.name LIKE ? OR p.target_domain LIKE ?)")
-        like = f"%{q.strip()}%"
-        params.extend([like, like])
+        where.append("p.name LIKE ?")
+        params.append(f"%{q.strip()}%")
     rows = get_conn().execute(
         f"""SELECT p.*, {_STATS}
             FROM projects p
@@ -134,7 +133,7 @@ def create_project(
     user: dict,
     *,
     name: str,
-    target_domain: str,
+    target_domain: str = "",
     project_type: str,
     daily_speed: int,
     notes: str = "",
@@ -154,6 +153,7 @@ def create_project(
         return None, "Daily speed must be at least 1."
     notes = (notes or "").strip()[:500]
     tags = (tags or "").strip()[:200]
+    target_domain = (target_domain or "").strip()
     flags = engines or {}
     now = utcnow()
     with tx() as conn:

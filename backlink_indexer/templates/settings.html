@@ -9,7 +9,6 @@
 <form class="card" method="post" action="/app/settings">
   <input type="hidden" name="action" value="save">
   <label class="field">Public base URL <input name="public_base_url" value="{{ settings.public_base_url }}" placeholder="https://indexer.example.com"></label>
-  <label class="field">Default target domain <input name="default_target_domain" value="{{ settings.default_target_domain }}"></label>
   <label class="field">WebSub hub <input name="websub_hub" value="{{ settings.websub_hub }}"></label>
   <label class="field">Hub includes
     <select name="hub_include">

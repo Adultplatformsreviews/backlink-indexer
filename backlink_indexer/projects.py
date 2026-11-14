@@ -198,16 +198,27 @@ def set_run_status(user_id: int, project_id: int, status: str) -> bool:
         return cur.rowcount > 0
 
 
+PAGE_SIZES = (10, 50, 100)
+
+
 def list_urls(
     project_id: int,
     *,
     q: str = "",
     filt: str = "all",
     page: int = 1,
-    per: int = 10,
+    per: int | str = 0,
 ) -> dict:
-    if per not in {5, 10, 25}:
-        per = 10
+    """Return matching links. per=0 or 'all' returns every row; 10, 50, and 100 paginate."""
+    token = str(per).strip().lower() if per is not None else "all"
+    if token in {"", "all", "0"}:
+        page_size = 0
+    else:
+        try:
+            requested = int(token)
+        except (TypeError, ValueError):
+            requested = 0
+        page_size = requested if requested in PAGE_SIZES else 0
     page = max(1, int(page or 1))
     where = ["project_id = ?"]
     params: list = [project_id]
@@ -230,19 +241,31 @@ def list_urls(
     total = int(
         get_conn().execute(f"SELECT COUNT(*) AS c FROM urls WHERE {where_sql}", params).fetchone()["c"]
     )
-    pages = max(1, (total + per - 1) // per)
+    if page_size == 0:
+        rows = get_conn().execute(
+            f"SELECT * FROM urls WHERE {where_sql} ORDER BY id DESC",
+            params,
+        ).fetchall()
+        return {
+            "urls": [dict(row) for row in rows],
+            "total": total,
+            "page": 1,
+            "per": 0,
+            "pages": 1,
+        }
+    pages = max(1, (total + page_size - 1) // page_size)
     if page > pages:
         page = pages
     rows = get_conn().execute(
         f"""SELECT * FROM urls WHERE {where_sql}
             ORDER BY id DESC LIMIT ? OFFSET ?""",
-        [*params, per, (page - 1) * per],
+        [*params, page_size, (page - 1) * page_size],
     ).fetchall()
     return {
         "urls": [dict(row) for row in rows],
         "total": total,
         "page": page,
-        "per": per,
+        "per": page_size,
         "pages": pages,
     }
 

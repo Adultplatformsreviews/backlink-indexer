@@ -1,9 +1,10 @@
 const themeToggle = document.getElementById("themeToggle");
 if (themeToggle) {
   const saved = localStorage.getItem("bi-theme");
-  if (saved) document.documentElement.dataset.theme = saved;
+  if (saved === "dark" || saved === "light") document.documentElement.dataset.theme = saved;
   themeToggle.addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    const current = document.documentElement.dataset.theme || "light";
+    const next = current === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
     localStorage.setItem("bi-theme", next);
   });

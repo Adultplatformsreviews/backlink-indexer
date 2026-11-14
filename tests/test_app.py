@@ -202,15 +202,22 @@ def test_manual_mark_and_pagination(client):
             "project_type": "check",
             "target_domain": "example.com",
             "daily_speed": "10",
-            "urls": "\n".join(f"https://example.com/c{i}" for i in range(6)),
+            "urls": "\n".join(f"https://example.com/c{i}" for i in range(12)),
         },
         follow_redirects=False,
     )
     path = created.headers["location"].split("?")[0]
-    page2 = client.get(path + "?per=5&page=2")
+    everything = client.get(path)
+    assert "c0" in everything.text and "c11" in everything.text
+    assert "1 / 1" in everything.text
+    assert ">All<" in everything.text
+    queued = client.get(path + "?filter=queued")
+    assert "c0" in queued.text and "c11" in queued.text
+    page2 = client.get(path + "?per=10&page=2")
     assert "c0" in page2.text
+    assert "c11" not in page2.text
     assert "2 / 2" in page2.text
-    listed = client.get(path + "?per=25")
+    listed = client.get(path + "?per=all&q=c0")
     ids = re.findall(r'name="ids" value="(\d+)"', listed.text)
     assert ids
     done = client.post(path + "/bulk", data={"action": "mark_google_indexed", "ids": ids[0]}, follow_redirects=True)

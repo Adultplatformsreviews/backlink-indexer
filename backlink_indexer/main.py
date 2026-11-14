@@ -537,7 +537,7 @@ async def create_project_route(
 
 
 @app.get("/app/projects/{project_id}")
-async def project_detail(project_id: int, request: Request, q: str = "", filter: str = "all", page: int = 1, per: int = 10):
+async def project_detail(project_id: int, request: Request, q: str = "", filter: str = "all", page: int = 1, per: str = "all"):
     user, redirect = _need(request)
     if redirect:
         return redirect
@@ -747,18 +747,7 @@ async def export_csv(project_id: int, request: Request, q: str = "", filter: str
     project = get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
-    listing = list_urls(project_id, q=q, filt=filter, page=1, per=25)
-    # Export the full filtered set, not one page.
-    listing = list_urls(project_id, q=q, filt=filter, page=1, per=25)
-    total = listing["total"]
-    rows = []
-    page = 1
-    while len(rows) < total:
-        chunk = list_urls(project_id, q=q, filt=filter, page=page, per=25)
-        rows.extend(chunk["urls"])
-        if page >= chunk["pages"]:
-            break
-        page += 1
+    rows = list_urls(project_id, q=q, filt=filter, per="all")["urls"]
     buf = io.StringIO()
     fields = [
         "id", "url", "queue_status", "google_state", "yandex_state", "bing_state",

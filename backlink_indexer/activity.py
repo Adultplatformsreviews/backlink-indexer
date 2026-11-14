@@ -8,10 +8,10 @@ from typing import Optional
 from .database import get_conn
 
 ENGINES = (
-    ("google", "Google", "#3dbe8c"),
-    ("bing", "Bing", "#e4c89a"),
-    ("yandex", "Yandex", "#9b7dff"),
-    ("indexnow", "IndexNow", "#f6e7c1"),
+    ("google", "Google", "#7b2ff7"),
+    ("bing", "Bing", "#ff1aa8"),
+    ("yandex", "Yandex", "#6a2ee8"),
+    ("indexnow", "IndexNow", "#ff6eb4"),
 )
 
 

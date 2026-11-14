@@ -20,7 +20,6 @@
     <div class="k">{% if user.unlimited %}Sending{% else %}Sending / checking speed{% endif %}</div>
     {% if user.unlimited %}
     <div class="v">Unlimited</div>
-    <div class="s good">{% for row in engine_quotas %}{{ row.label }} {{ row.remaining }} left{% if not loop.last %} · {% endif %}{% endfor %}</div>
     {% else %}
     <div class="v">{{ speed.used }} <span>/ day</span></div>
     <div class="s good">Free {{ speed.free }} · distribute</div>

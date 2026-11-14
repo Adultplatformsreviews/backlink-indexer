@@ -1,2 +1,19 @@
+[project]
+name = "backlink-indexer"
+version = "1.4.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "google-auth>=2.36",
+    "google-api-python-client>=2.150",
+    "psycopg[binary]>=3.2",
+]
+
 [tool.vercel]
-entrypoint = "backlink_indexer.main:app"
+entrypoint = "vercel_app:app"

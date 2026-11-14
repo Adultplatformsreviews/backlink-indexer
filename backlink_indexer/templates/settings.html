@@ -8,6 +8,10 @@
 {% else %}
 <form class="card" method="post" action="/app/settings">
   <input type="hidden" name="action" value="save">
+  <h2>Site verification</h2>
+  <p class="sub">Printed in the head of the public pages, including the homepage. Leave Yandex blank to keep the built-in code.</p>
+  <label class="field">Yandex verification <input name="yandex_verification" value="{{ yandex_verification }}" autocomplete="off"></label>
+  <label class="field">Google site verification <input name="google_site_verification" value="{{ google_site_verification }}" autocomplete="off" placeholder="Optional"></label>
   <label class="field">Public base URL <input name="public_base_url" value="{{ settings.public_base_url }}" placeholder="https://indexer.example.com"></label>
   <label class="field">WebSub hub <input name="websub_hub" value="{{ settings.websub_hub }}"></label>
   <label class="field">Hub includes

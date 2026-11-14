@@ -1099,6 +1099,15 @@ async def settings_page(request: Request):
     )
 
 
+def _verification_token(value: str) -> Optional[str]:
+    token = (value or "").strip()
+    if not token:
+        return ""
+    if len(token) > 128 or any(not (ch.isalnum() or ch in "-_") for ch in token):
+        return None
+    return token
+
+
 @app.post("/app/settings")
 async def save_settings(
     request: Request,
@@ -1119,6 +1128,8 @@ async def save_settings(
     yandex_webmaster_user_id: str = Form(""),
     yandex_webmaster_host_id: str = Form(""),
     yandex_site_host: str = Form(""),
+    yandex_verification: str = Form(""),
+    google_site_verification: str = Form(""),
 ):
     user, redirect = _need(request)
     if redirect:
@@ -1173,6 +1184,12 @@ async def save_settings(
     updates["yandex_webmaster_user_id"] = yandex_webmaster_user_id.strip()
     updates["yandex_webmaster_host_id"] = yandex_webmaster_host_id.strip()
     updates["yandex_site_host"] = registrable_host(yandex_site_host)
+    yandex_code = _verification_token(yandex_verification)
+    google_code = _verification_token(google_site_verification)
+    if yandex_code is None or google_code is None:
+        return _notice("/app/settings", "Verification codes can only use letters, numbers, hyphens, and underscores.")
+    updates["yandex_verification"] = yandex_code
+    updates["google_site_verification"] = google_code
     set_settings(updates)
     return _notice("/app/settings", "Settings saved.")
 

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
-from .config import DATA_DIR, DB_PATH
+from .config import DATA_DIR, DB_PATH, DEFAULT_YANDEX_VERIFICATION
 
 _local = threading.local()
 _schema_ready = False
@@ -655,6 +655,8 @@ def _seed_defaults(conn: DB) -> None:
         "yandex_webmaster_user_id": "",
         "yandex_webmaster_host_id": "",
         "yandex_site_host": "",
+        "yandex_verification": DEFAULT_YANDEX_VERIFICATION,
+        "google_site_verification": "",
     }
     for key, value in defaults.items():
         conn.execute(

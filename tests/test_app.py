@@ -3,7 +3,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from backlink_indexer.database import close_conn, get_conn, resolve_database_url, tx, utcnow
+from backlink_indexer.database import close_conn, get_conn, get_settings, resolve_database_url, set_setting, tx, utcnow
 from backlink_indexer.limits import record_added
 from backlink_indexer.main import app
 
@@ -425,6 +425,59 @@ def test_import_search_resubmit_history_and_chart(client, monkeypatch):
     assert "Last 14 days" in chart.text
     assert "Last 30 days" in client.get("/app?days=30").text
     assert "Start free" in client.get("/").text
+
+
+def test_public_pages_include_site_verification(client):
+    home = client.get("/")
+    assert home.status_code == 200
+    assert home.headers.get("location") is None
+    assert 'name="yandex-verification"' in home.text
+    assert 'content="132993a7deb9e806"' in home.text
+    assert "google-site-verification" not in home.text
+    pricing = client.get("/pricing")
+    assert 'name="yandex-verification"' in pricing.text
+    signup(client, "verifier", "password1", email="muhammadzeeshanhaideroffical@gmail.com")
+    settings = client.get("/app/settings")
+    assert "Site verification" in settings.text
+    assert "132993a7deb9e806" in settings.text
+    stored = get_settings()
+    close_conn()
+    saved = client.post(
+        "/app/settings",
+        data={
+            "action": "save",
+            "public_base_url": stored.get("public_base_url", ""),
+            "websub_hub": stored.get("websub_hub", ""),
+            "hub_include": stored.get("hub_include") or "all",
+            "indexnow_key": stored.get("indexnow_key", ""),
+            "serp_provider": stored.get("serp_provider") or "serpapi",
+            "serp_api_key": stored.get("serp_api_key", ""),
+            "serp_endpoint": stored.get("serp_endpoint", ""),
+            "tokens_per_url": stored.get("tokens_per_url") or "1",
+            "bing_webmaster_api_key": stored.get("bing_webmaster_api_key", ""),
+            "bing_site_url": stored.get("bing_site_url", ""),
+            "yandex_webmaster_token": stored.get("yandex_webmaster_token", ""),
+            "yandex_webmaster_user_id": stored.get("yandex_webmaster_user_id", ""),
+            "yandex_webmaster_host_id": stored.get("yandex_webmaster_host_id", ""),
+            "yandex_site_host": stored.get("yandex_site_host", ""),
+            "yandex_verification": "abc123def456",
+            "google_site_verification": "google-token_1",
+        },
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    client.post("/logout")
+    home = client.get("/")
+    assert 'content="abc123def456"' in home.text
+    assert 'name="google-site-verification"' in home.text
+    assert 'content="google-token_1"' in home.text
+    set_setting("yandex_verification", "")
+    set_setting("google_site_verification", "")
+    close_conn()
+    fallback = client.get("/")
+    assert 'content="132993a7deb9e806"' in fallback.text
+    assert "google-site-verification" not in fallback.text
+    assert client.get("/health").json()["version"] == "1.4.2"
 
 
 def test_import_respects_daily_limit(client):

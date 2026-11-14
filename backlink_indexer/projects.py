@@ -147,12 +147,24 @@ def unique_slug(name: str, project_id: Optional[int] = None) -> str:
         number += 1
 
 
+def _publish_value(value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def backfill_crawl_hub() -> int:
     """Give every pre-existing project a slug and turn the crawl hub on.
 
     A project that already has a slug and publish_hub 0 was switched off on
     purpose and is left alone. An empty slug means the hub feature never ran
-    for that row, so it is published by default.
+    for that row, so it is published by default. Safe to call on every startup
+    and on every public sitemap or hub request.
     """
     rows = get_conn().execute(
         "SELECT id, name, slug, publish_hub FROM projects ORDER BY id"
@@ -160,22 +172,27 @@ def backfill_crawl_hub() -> int:
     changed = 0
     for row in rows:
         slug = (row["slug"] or "").strip()
-        publish = row["publish_hub"]
-        new_slug = slug
-        new_publish = publish
+        publish = _publish_value(row["publish_hub"])
         if not slug:
             new_slug = unique_slug(row["name"] or "project", int(row["id"]))
             new_publish = 1
         elif publish is None:
+            new_slug = slug
             new_publish = 1
         else:
             continue
         with tx() as conn:
             conn.execute(
-                "UPDATE projects SET slug = ?, publish_hub = ? WHERE id = ?",
+                "UPDATE projects SET slug = ?, publish_hub = ? WHERE id = ? AND (slug IS NULL OR trim(slug) = '' OR publish_hub IS NULL)",
                 (new_slug, int(new_publish or 0), row["id"]),
             )
         changed += 1
+    # The per-row transaction already committed. Commit again so a pooled
+    # connection cannot drop the write when this request ends.
+    try:
+        get_conn().commit()
+    except Exception:
+        pass
     return changed
 
 

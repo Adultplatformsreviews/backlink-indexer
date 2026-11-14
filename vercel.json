@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "backlink_indexer/main.py": {
+      "includeFiles": "backlink_indexer/**"
+    }
+  },
   "crons": [
     {
       "path": "/api/cron/tick",

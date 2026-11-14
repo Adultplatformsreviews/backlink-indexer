@@ -64,7 +64,14 @@ from .ui import current_user, login_redirect, render
 ROOT_DIR = __import__("pathlib").Path(__file__).resolve().parent
 
 app = FastAPI(title="Backlink Indexer", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
-app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "static")), name="static")
+_static_dir = ROOT_DIR / "static"
+# check_dir=False so a missing bundle cannot crash process import.
+# vercel.json includeFiles still ships static/ and templates/ with the function.
+app.mount(
+    "/static",
+    StaticFiles(directory=str(_static_dir), check_dir=False),
+    name="static",
+)
 
 
 @app.middleware("http")
@@ -77,8 +84,15 @@ async def close_db(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup() -> None:
-    init_db()
-    close_conn()
+    # Database setup must not prevent the process from importing or serving /health.
+    try:
+        init_db()
+    except Exception:
+        pass
+    try:
+        close_conn()
+    except Exception:
+        pass
 
 
 def _user(request: Request):
@@ -1070,4 +1084,4 @@ if __name__ == "__main__":
     import uvicorn
     from .config import HOST, PORT
 
-    uvicorn.run("app.main:app", host=HOST, port=PORT, reload=False)
+    uvicorn.run("backlink_indexer.main:app", host=HOST, port=PORT, reload=False)

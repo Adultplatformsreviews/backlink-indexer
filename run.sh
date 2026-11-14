@@ -7,4 +7,4 @@ if [ ! -d .venv ]; then
 fi
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-8787}"
-exec .venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT"
+exec .venv/bin/uvicorn backlink_indexer.main:app --host "$HOST" --port "$PORT"

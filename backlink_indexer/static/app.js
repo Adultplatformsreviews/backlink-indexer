@@ -1,12 +1,14 @@
 const themeToggle = document.getElementById("themeToggle");
 if (themeToggle) {
-  const saved = localStorage.getItem("bi-theme");
-  if (saved === "dark" || saved === "light") document.documentElement.dataset.theme = saved;
+  try { localStorage.removeItem("bi-theme"); } catch (e) {}
+  const saved = localStorage.getItem("bi-theme-2");
+  if (saved === "dark") document.documentElement.dataset.theme = "dark";
+  else document.documentElement.removeAttribute("data-theme");
   themeToggle.addEventListener("click", () => {
-    const current = document.documentElement.dataset.theme || "light";
-    const next = current === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem("bi-theme", next);
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    if (next === "dark") document.documentElement.dataset.theme = "dark";
+    else document.documentElement.removeAttribute("data-theme");
+    localStorage.setItem("bi-theme-2", next);
   });
 }
 const toggle = document.getElementById("menuToggle");
@@ -60,4 +62,55 @@ if (drawer && historyList) {
     });
   });
   if (historyClose) historyClose.addEventListener("click", () => drawer.close());
+}
+
+document.querySelectorAll("[data-engine-group]").forEach((group) => {
+  const master = group.querySelector("[data-engine-all]");
+  const boxes = Array.from(group.querySelectorAll("[data-engine]"));
+  if (!master || !boxes.length) return;
+  const sync = () => {
+    const on = boxes.filter((box) => box.checked).length;
+    master.checked = on === boxes.length;
+    master.indeterminate = on > 0 && on < boxes.length;
+  };
+  master.addEventListener("change", () => {
+    boxes.forEach((box) => { box.checked = master.checked; });
+    master.indeterminate = false;
+  });
+  boxes.forEach((box) => box.addEventListener("change", sync));
+  sync();
+});
+
+const processForm = document.getElementById("processForm");
+const processProgress = document.getElementById("processProgress");
+async function processUntilDone() {
+  if (!processForm || !processProgress) return;
+  processProgress.hidden = false;
+  let guard = 0;
+  while (guard < 80) {
+    guard += 1;
+    processProgress.textContent = "Processing a batch…";
+    const response = await fetch(processForm.action, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      processProgress.textContent = "Processing stopped (" + response.status + "). Run Process due now to continue.";
+      return;
+    }
+    const data = await response.json();
+    processProgress.textContent = data.message || "Batch finished.";
+    if (!data.continue) {
+      window.location.reload();
+      return;
+    }
+  }
+  window.location.reload();
+}
+if (processForm) {
+  processForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    processUntilDone();
+  });
+  if (new URLSearchParams(window.location.search).get("continue") === "1") processUntilDone();
 }

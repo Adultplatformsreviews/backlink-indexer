@@ -14,7 +14,7 @@
   </div>
   <div class="side-actions">
     {% if project.run_status == 'running' %}
-    <form method="post" action="/app/projects/{{ project.id }}/process"><button class="btn red" type="submit">Process due now</button></form>
+    <form id="processForm" method="post" action="/app/projects/{{ project.id }}/process"><button class="btn red" id="processNow" type="submit">Process due now</button></form>
     <form method="post" action="/app/projects/{{ project.id }}/stop"><button class="btn stop" type="submit">Stop</button></form>
     {% elif project.run_status == 'stopped' %}
     <form method="post" action="/app/projects/{{ project.id }}/resume"><button class="btn" type="submit">Resume</button></form>
@@ -23,6 +23,13 @@
   </div>
 </section>
 <p class="honest">“Indexed” comes only from a SERP check or your manual mark. “Accepted” means Bing, Yandex, or IndexNow took the submission. A submission is never an index confirmation.</p>
+{% if engine_banner %}<p class="error">{{ engine_banner }}</p>{% endif %}
+<p id="processProgress" class="notice" hidden></p>
+<form class="card" method="post" action="/app/projects/{{ project.id }}/engines">
+  <h2>Search engines</h2>
+  {% include "engines.html" %}
+  <button class="btn" type="submit">Save engines</button>
+</form>
 <form class="card import-card" method="post" action="/app/projects/{{ project.id }}/urls" enctype="multipart/form-data">
   <h2>Add links</h2>
   <p class="sub">{% if user.unlimited %}Unlimited. No daily URL cap, token charge, or per-project pace. Engine quotas still apply.{% else %}{{ usage.label }}. New URLs count toward the daily limit.{% endif %} Duplicates already in this project are skipped.</p>
@@ -33,6 +40,10 @@
     <label class="field">CSV or TXT upload <input type="file" name="upload" accept=".csv,.txt,.tsv,.xml,text/csv,text/plain"></label>
     <label class="field">Sitemap URL <input name="sitemap_url" type="url" placeholder="https://example.com/sitemap.xml"></label>
   </div>
+  <div class="field">Engines for this import
+    {% include "engines.html" %}
+  </div>
+  <input type="hidden" name="autoprocess" value="1">
   <button class="btn red" type="submit">Import into this project</button>
 </form>
 <form method="get" class="tabs">

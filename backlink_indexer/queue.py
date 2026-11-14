@@ -31,10 +31,18 @@ def ticks_per_day() -> int:
 
 
 def budget_seconds() -> float:
+    """Stay inside a Hobby serverless limit. Override with QUEUE_BUDGET_SECONDS."""
     try:
-        return max(5.0, float(os.environ.get("QUEUE_BUDGET_SECONDS", "240")))
+        return max(3.0, min(25.0, float(os.environ.get("QUEUE_BUDGET_SECONDS", "8"))))
     except ValueError:
-        return 240.0
+        return 8.0
+
+
+def batch_limit() -> int:
+    try:
+        return max(1, min(100, int(os.environ.get("QUEUE_BATCH_LIMIT", "60"))))
+    except ValueError:
+        return 60
 
 
 def _today() -> str:
@@ -219,11 +227,26 @@ def _save_url(
 
 def _prefer(current: str, new: str) -> str:
     """Keep an acceptance if any real submission was accepted. Never upgrade to indexed."""
-    if new == "accepted" or current in {"", "unknown"}:
+    if new == "accepted" or current in {"", "unknown", "not_configured"}:
         return new or current
     if current == "accepted":
         return current
     return new or current
+
+
+def _flag(project: dict, name: str) -> bool:
+    if name not in project or project.get(name) is None:
+        return True
+    return str(project.get(name)) not in {"0", "False", "false"}
+
+
+def selected_engines(project: dict) -> dict[str, bool]:
+    return {
+        "google": _flag(project, "use_google"),
+        "bing": _flag(project, "use_bing"),
+        "yandex": _flag(project, "use_yandex"),
+        "indexnow": _flag(project, "use_indexnow"),
+    }
 
 
 async def _submit_owned(
@@ -232,17 +255,22 @@ async def _submit_owned(
     owned: set[str],
     base: str,
     key: str,
+    selected: Optional[dict[str, bool]] = None,
 ) -> tuple[dict[str, str], str, dict[str, str]]:
     """Return engine states, note, and extra detail fields. Never sets indexed."""
-    engines = {"google": "unknown", "yandex": "unknown", "bing": "unknown"}
+    selected = selected or {"google": True, "bing": True, "yandex": True, "indexnow": True}
+    engines = {"google": "off", "yandex": "off", "bing": "off"}
     extra: dict[str, Any] = {"google_detail": "", "indexnow_detail": "", "attempts": []}
     notes: list[str] = []
     attempts: list[dict[str, str]] = extra["attempts"]
-    if not _is_owned(url, owned):
-        return engines, "", extra
     host = host_of(url)
     deferred = False
-    if key:
+    owned_host = _is_owned(url, owned)
+    if not selected.get("indexnow", True):
+        detail = "IndexNow is turned off for this project."
+        notes.append(detail)
+        attempts.append({"method": "indexnow", "status": "off", "detail": detail})
+    elif key:
         if quota_remaining("indexnow") < 1:
             deferred = True
             note = "IndexNow fair-use quota is used for today. This URL stays queued for the next day."
@@ -279,12 +307,34 @@ async def _submit_owned(
                     "detail": f"IndexNow {name}: {item.get('detail') or 'no response body'}"[:500],
                 })
     else:
-        notes.append("Host is owned, but no IndexNow key is saved in Settings.")
+        detail = "IndexNow is not configured. Set INDEXNOW_KEY or save a key in Settings."
+        notes.append(detail)
+        attempts.append({"method": "indexnow", "status": "not_configured", "detail": detail})
+        if engines["bing"] == "off":
+            engines["bing"] = "not_configured"
+        if engines["yandex"] == "off":
+            engines["yandex"] = "not_configured"
 
     bing_key, _bing_source = setting_or_env("bing_webmaster_api_key", "BING_WEBMASTER_API_KEY")
-    bing_site = (get_setting("bing_site_url") or "").strip() or f"https://{host}/"
+    bing_site = (setting_or_env("bing_site_url", "BING_WEBMASTER_SITE_URL")[0] or "").strip() or f"https://{host}/"
     site_host = registrable_host(host_of(bing_site))
-    if bing_key and (not site_host or site_host == registrable_host(host)):
+    if not selected.get("bing", True):
+        if engines["bing"] == "off":
+            detail = "Bing Webmaster is turned off for this project."
+            notes.append(detail)
+            attempts.append({"method": "bing", "status": "off", "detail": detail})
+        bing_key = ""
+    elif not bing_key:
+        detail = "Bing Webmaster is not configured. Set BING_WEBMASTER_API_KEY to use SubmitUrlBatch."
+        notes.append(detail)
+        attempts.append({"method": "bing", "status": "not_configured", "detail": detail})
+        if engines["bing"] == "off":
+            engines["bing"] = "not_configured"
+    elif not owned_host:
+        detail = "Bing Webmaster was not called because this host is not marked as owned."
+        notes.append(detail)
+        attempts.append({"method": "bing", "status": "not_configured", "detail": detail})
+    elif bing_key and (not site_host or site_host == registrable_host(host)):
         bing_result = await bing_webmaster.submit_url(client, bing_key, bing_site, url)
         notes.append(bing_result.get("detail") or "Bing Webmaster returned no detail.")
         attempts.append({
@@ -303,7 +353,13 @@ async def _submit_owned(
     user_id, _user_source = setting_or_env("yandex_webmaster_user_id", "YANDEX_WEBMASTER_USER_ID")
     host_id, _host_source = setting_or_env("yandex_webmaster_host_id", "YANDEX_WEBMASTER_HOST_ID")
     yandex_host = registrable_host(get_setting("yandex_site_host") or host)
-    if token and user_id and host_id and yandex_host == registrable_host(host):
+    if not selected.get("yandex", True):
+        if engines["yandex"] == "off":
+            detail = "Yandex Webmaster is turned off for this project."
+            notes.append(detail)
+            attempts.append({"method": "yandex", "status": "off", "detail": detail})
+        token = user_id = host_id = ""
+    elif token and user_id and host_id and yandex_host == registrable_host(host):
         quota = await yandex_webmaster.fetch_quota(client, token, user_id, host_id)
         if not quota.get("ok"):
             detail = quota.get("detail") or "Yandex recrawl quota could not be read."
@@ -325,9 +381,28 @@ async def _submit_owned(
             if recrawl.get("state") in {"accepted", "rejected"}:
                 engines["yandex"] = _prefer(engines["yandex"], recrawl["state"])
     elif token or user_id or host_id:
-        notes.append("Yandex recrawl needs an OAuth token, user id, and host id. Recrawl was not sent.")
+        detail = "Yandex recrawl needs an OAuth token, user id, and host id. Recrawl was not sent."
+        notes.append(detail)
+        attempts.append({"method": "yandex", "status": "not_configured", "detail": detail})
+    elif not owned_host:
+        detail = "Yandex Webmaster is not configured, or this host is not marked as owned."
+        notes.append(detail)
+        attempts.append({"method": "yandex", "status": "not_configured", "detail": detail})
+        if engines["yandex"] == "off":
+            engines["yandex"] = "not_configured"
+    else:
+        detail = "Yandex Webmaster is not configured. Set YANDEX_WEBMASTER_TOKEN, YANDEX_WEBMASTER_USER_ID, and YANDEX_WEBMASTER_HOST_ID."
+        notes.append(detail)
+        attempts.append({"method": "yandex", "status": "not_configured", "detail": detail})
+        if engines["yandex"] == "off":
+            engines["yandex"] = "not_configured"
 
-    if google_indexing.service_account_present():
+    if not selected.get("google", True):
+        detail = "Google Indexing API is turned off for this project."
+        notes.append(detail)
+        attempts.append({"method": "google", "status": "off", "detail": detail})
+        engines["google"] = "off"
+    elif google_indexing.service_account_present() and owned_host:
         if quota_remaining("google_indexing") < 1:
             deferred = True
             detail = "Google Indexing API daily quota (200) is used. This URL stays queued for the next day."
@@ -346,6 +421,15 @@ async def _submit_owned(
                 detail = "Google Indexing API: " + (result.get("detail") or "not accepted.")
                 notes.append(detail)
                 attempts.append({"method": "google", "status": "rejected", "detail": detail[:500]})
+    else:
+        detail = (
+            "Google Indexing API is not configured."
+            if not google_indexing.service_account_present()
+            else "Google Indexing API was not called because this host is not marked as owned."
+        )
+        notes.append(detail)
+        attempts.append({"method": "google", "status": "not_configured", "detail": detail})
+        engines["google"] = "not_configured"
     extra["deferred"] = deferred
     return engines, " ".join(notes).strip(), extra
 
@@ -416,8 +500,10 @@ async def _process_row(
         precheck["google_detail"] = note[:300]
     else:
         base = _public_base()
-        key = get_setting("indexnow_key")
-        engines, owned_note, extra = await _submit_owned(client, row["url"], owned, base, key)
+        key, _source = setting_or_env("indexnow_key", "INDEXNOW_KEY")
+        engines, owned_note, extra = await _submit_owned(
+            client, row["url"], owned, base, key, selected_engines(project)
+        )
         for attempt in extra.get("attempts") or []:
             _record_submission(
                 row["id"],
@@ -551,11 +637,12 @@ async def run_queue(
     async with httpx.AsyncClient(
         follow_redirects=True,
         headers={"User-Agent": USER_AGENT},
-        timeout=30.0,
+        timeout=6.0,
         limits=httpx.Limits(max_connections=FETCH_CONCURRENCY + 4, max_keepalive_connections=8),
     ) as client:
+        client.bi_timeout = 4
         for project in _due_projects(user_id, project_id):
-            room = allowance(project)
+            room = min(allowance(project), batch_limit())
             rows = _queued_rows(project["id"], room)
             if not rows:
                 continue

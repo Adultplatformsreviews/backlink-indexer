@@ -19,6 +19,8 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 
 STATE_LABELS = {
     "unknown": "Unknown",
+    "not_configured": "Not configured",
+    "off": "Off",
     "submitted": "Submitted",
     "accepted": "Accepted",
     "rejected": "Rejected",

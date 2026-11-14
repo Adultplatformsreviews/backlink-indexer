@@ -139,6 +139,7 @@ def create_project(
     daily_speed: int,
     notes: str = "",
     tags: str = "",
+    engines: Optional[dict] = None,
 ) -> tuple[Optional[dict], str]:
     name = (name or "").strip()
     if not name or len(name) > 80:
@@ -153,6 +154,7 @@ def create_project(
         return None, "Daily speed must be at least 1."
     notes = (notes or "").strip()[:500]
     tags = (tags or "").strip()[:200]
+    flags = engines or {}
     now = utcnow()
     with tx() as conn:
         project_id = insert_id(
@@ -160,11 +162,39 @@ def create_project(
             """INSERT INTO projects
                (user_id, name, target_domain, include_subdomains, project_type,
                 daily_speed, run_status, sent_today, sent_on, created_at, updated_at,
-                notes, tags)
-               VALUES (?, ?, ?, 1, ?, ?, 'running', 0, '', ?, ?, ?, ?)""",
-            (user["id"], name, target_domain, project_type, daily_speed, now, now, notes, tags),
+                notes, tags, use_google, use_bing, use_yandex, use_indexnow)
+               VALUES (?, ?, ?, 1, ?, ?, 'running', 0, '', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user["id"], name, target_domain, project_type, daily_speed, now, now, notes, tags,
+                int(flags.get("use_google", 1)),
+                int(flags.get("use_bing", 1)),
+                int(flags.get("use_yandex", 1)),
+                int(flags.get("use_indexnow", 1)),
+            ),
         )
     return get_project(project_id, user["id"]), ""
+
+
+def set_engines(user_id: int, project_id: int, engines: dict) -> str:
+    project = get_project(project_id, user_id)
+    if not project:
+        return "Project not found."
+    with tx() as conn:
+        conn.execute(
+            """UPDATE projects
+               SET use_google=?, use_bing=?, use_yandex=?, use_indexnow=?, updated_at=?
+               WHERE id=? AND user_id=?""",
+            (
+                int(engines.get("use_google", 0)),
+                int(engines.get("use_bing", 0)),
+                int(engines.get("use_yandex", 0)),
+                int(engines.get("use_indexnow", 0)),
+                utcnow(),
+                project_id,
+                user_id,
+            ),
+        )
+    return ""
 
 
 def set_speed(user: dict, project_id: int, daily_speed: int) -> str:

@@ -26,12 +26,14 @@ class RobotsCache:
         self._cache: dict[str, tuple[float, Optional[RobotFileParser], Optional[str]]] = {}
         self._ttl = 600.0
 
-    async def allowed(self, client: httpx.AsyncClient, url: str) -> tuple[Optional[bool], Optional[str]]:
+    async def allowed(
+        self, client: httpx.AsyncClient, url: str, timeout: Optional[float] = None
+    ) -> tuple[Optional[bool], Optional[str]]:
         key = robots_url(url)
         now = time.time()
         entry = self._cache.get(key)
         if not entry or now - entry[0] > self._ttl:
-            parser, error = await self._fetch(client, key)
+            parser, error = await self._fetch(client, key, timeout)
             self._cache[key] = (now, parser, error)
         else:
             _, parser, error = entry
@@ -54,12 +56,12 @@ class RobotsCache:
         return True, None
 
     async def _fetch(
-        self, client: httpx.AsyncClient, robots: str
+        self, client: httpx.AsyncClient, robots: str, timeout: Optional[float] = None
     ) -> tuple[Optional[RobotFileParser], Optional[str]]:
         try:
             resp = await client.get(
                 robots,
-                timeout=FETCH_TIMEOUT,
+                timeout=FETCH_TIMEOUT if timeout is None else timeout,
                 follow_redirects=True,
                 headers={"User-Agent": USER_AGENT, "Accept": "text/plain,*/*"},
             )
@@ -84,6 +86,7 @@ async def precheck_url(
     target_domain: str,
     include_subdomains: bool = True,
     robots_cache: Optional[RobotsCache] = None,
+    timeout: Optional[float] = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "http_status": None,
@@ -109,9 +112,12 @@ async def precheck_url(
         result["is_live"] = False
         return result
 
+    if timeout is None:
+        timeout = getattr(client, "bi_timeout", None)
+    limit = FETCH_TIMEOUT if timeout is None else timeout
     robots_cache = robots_cache or RobotsCache()
     try:
-        allowed, robots_error = await robots_cache.allowed(client, url)
+        allowed, robots_error = await robots_cache.allowed(client, url, timeout=limit)
         result["robots_disallow"] = (False if allowed is None else (not allowed))
         if robots_error and allowed is None:
             # Unknown — leave robots_disallow as None (stored as NULL).
@@ -129,7 +135,7 @@ async def precheck_url(
     try:
         resp = await client.get(
             url,
-            timeout=FETCH_TIMEOUT,
+            timeout=limit,
             follow_redirects=True,
             headers=headers,
         )

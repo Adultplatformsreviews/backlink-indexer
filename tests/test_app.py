@@ -133,7 +133,7 @@ def test_signup_project_tokens_and_daily_speed(client, monkeypatch):
     close_conn()
     assert sum(row["queue_status"] == "sent" for row in rows) == 2
     assert sum(row["queue_status"] == "queued" for row in rows) == 3
-    assert all(row["google_state"] == "unknown" for row in rows)
+    assert all(row["google_state"] == "not_configured" for row in rows if row["queue_status"] == "sent")
     second = client.post(project_path + "/process", follow_redirects=True)
     assert "Nothing was due" in second.text
 
@@ -190,7 +190,7 @@ def test_indexnow_submission_is_not_indexed(client, monkeypatch):
     assert row["queue_status"] == "sent"
     assert row["yandex_state"] == "accepted"
     assert row["bing_state"] == "accepted"
-    assert row["google_state"] == "unknown"
+    assert row["google_state"] == "not_configured"
 
 
 def test_manual_mark_and_pagination(client):
@@ -550,6 +550,52 @@ def test_spaced_operator_email_and_queue_ignores_daily_speed(client, monkeypatch
     assert [row["queue_status"] for row in rows] == ["sent", "sent", "sent"]
     assert stored["email"] == "muhammadzeeshanhaideroffical@gmail.com"
     assert stored["plan_name"] == "VIP"
+
+
+def test_engine_selector_and_batch_process(client, monkeypatch):
+    signup(client, "picker", "password1")
+    page = client.get("/app/new")
+    assert "Select all engines" in page.text
+    assert "Not configured" in page.text
+    assert "bi-theme-2" in client.get("/login").text
+    created = client.post(
+        "/app/projects",
+        data={
+            "name": "Pick",
+            "project_type": "indexing",
+            "target_domain": "example.com",
+            "daily_speed": "10",
+            "engines_set": "1",
+            "use_indexnow": "1",
+            "urls": "\n".join(f"https://example.com/e{i}" for i in range(3)),
+        },
+        follow_redirects=False,
+    )
+    path = created.headers["location"].split("?")[0]
+    detail = client.get(path)
+    assert "Select all engines" in detail.text
+    assert "Off" in detail.text or "Not configured" in detail.text
+
+    async def fake_precheck(http, url, target, include, cache, timeout=None):
+        return {
+            "final_url": url, "http_status": 200, "is_live": True, "fetch_error": None,
+            "content_type": "text/html", "meta_robots": "", "x_robots_tag": "", "noindex": False,
+            "robots_disallow": False, "canonical": url, "canonicalized_away": False,
+            "has_link": False, "link_rel": "none", "link_count": 0, "link_details_json": "[]",
+        }
+
+    monkeypatch.setattr("backlink_indexer.queue.precheck_url", fake_precheck)
+    monkeypatch.setattr("backlink_indexer.queue.batch_limit", lambda: 1)
+    first = client.post(path + "/process", headers={"Accept": "application/json"})
+    body = first.json()
+    assert body["processed"] == 1
+    assert body["queued"] == 2
+    assert body["continue"] is True
+    rows = get_conn().execute("SELECT google_state, bing_state, yandex_state, http_status FROM urls").fetchall()
+    close_conn()
+    sent = [row for row in rows if row["http_status"] == 200]
+    assert sent
+    assert all(row["google_state"] == "off" for row in sent)
 
 
 def test_csv_export(client):

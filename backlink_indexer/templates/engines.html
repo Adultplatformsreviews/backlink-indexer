@@ -1,0 +1,15 @@
+<div class="engine-picker" data-engine-group>
+  <input type="hidden" name="engines_set" value="1">
+  <label class="engine-all">
+    <input type="checkbox" data-engine-all {% if engines and engines|selectattr('checked')|list|length == engines|length %}checked{% endif %}>
+    Select all engines
+  </label>
+  {% for engine in engines %}
+  <label>
+    <input type="checkbox" name="{{ engine.key }}" value="1" data-engine {% if engine.checked %}checked{% endif %}>
+    {{ engine.label }}
+    {% if not engine.configured %}<span class="badge">Not configured</span>{% endif %}
+  </label>
+  {% endfor %}
+  <p class="sub">Unchecked engines stay off. A checked engine with no key is skipped and marked Not configured.</p>
+</div>

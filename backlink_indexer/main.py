@@ -63,6 +63,7 @@ from .projects import (
     get_project,
     list_projects,
     list_urls,
+    set_engines,
     set_run_status,
     set_speed,
     type_counts,
@@ -229,6 +230,55 @@ async def _fetch_sitemap(url: str) -> tuple[list[str], str]:
     if not locs:
         return [], "Sitemap had no URLs."
     return locs, ""
+
+
+ENGINE_FIELDS = (
+    ("use_google", "Google Indexing API"),
+    ("use_bing", "Bing Webmaster"),
+    ("use_yandex", "Yandex Webmaster"),
+    ("use_indexnow", "IndexNow"),
+)
+
+
+def _configured_map() -> dict[str, bool]:
+    token, _token_source = setting_or_env("yandex_webmaster_token", "YANDEX_WEBMASTER_TOKEN")
+    user_id, _user_source = setting_or_env("yandex_webmaster_user_id", "YANDEX_WEBMASTER_USER_ID")
+    host_id, _host_source = setting_or_env("yandex_webmaster_host_id", "YANDEX_WEBMASTER_HOST_ID")
+    return {
+        "use_google": google_indexing.service_account_present(),
+        "use_bing": bool(setting_or_env("bing_webmaster_api_key", "BING_WEBMASTER_API_KEY")[0]),
+        "use_yandex": bool(token and user_id and host_id),
+        "use_indexnow": bool(setting_or_env("indexnow_key", "INDEXNOW_KEY")[0]),
+    }
+
+
+def engine_choices(saved: Optional[dict] = None) -> list[dict]:
+    configured = _configured_map()
+    rows = []
+    for key, label in ENGINE_FIELDS:
+        if saved is None:
+            checked = configured[key]
+        else:
+            checked = str(saved.get(key, 1)) not in {"0", "False", "false", ""}
+        rows.append({"key": key, "label": label, "configured": configured[key], "checked": checked})
+    return rows
+
+
+def posted_engines(
+    engines_set: str,
+    use_google: str,
+    use_bing: str,
+    use_yandex: str,
+    use_indexnow: str,
+) -> Optional[dict]:
+    if engines_set != "1":
+        return None
+    return {
+        "use_google": 1 if use_google == "1" else 0,
+        "use_bing": 1 if use_bing == "1" else 0,
+        "use_yandex": 1 if use_yandex == "1" else 0,
+        "use_indexnow": 1 if use_indexnow == "1" else 0,
+    }
 
 
 def _account_speed(user: dict) -> dict:
@@ -474,6 +524,7 @@ async def new_project_page(request: Request):
         default_speed=max(1, min(10, free or 1)),
         default_target=get_setting("default_target_domain") or DEFAULT_TARGET_DOMAIN,
         token_cost=get_setting("tokens_per_url") or "1",
+        engines=engine_choices(None),
     )
 
 
@@ -489,6 +540,12 @@ async def create_project_route(
     notes: str = Form(""),
     tags: str = Form(""),
     sitemap_url: str = Form(""),
+    autoprocess: str = Form(""),
+    engines_set: str = Form(""),
+    use_google: str = Form(""),
+    use_bing: str = Form(""),
+    use_yandex: str = Form(""),
+    use_indexnow: str = Form(""),
 ):
     user, redirect = _need(request)
     if redirect:
@@ -502,6 +559,7 @@ async def create_project_route(
         daily_speed=daily_speed,
         notes=notes,
         tags=tags,
+        engines=posted_engines(engines_set, use_google, use_bing, use_yandex, use_indexnow),
     )
     if not project:
         user = get_user(user["id"]) or user
@@ -517,6 +575,7 @@ async def create_project_route(
             default_target=target,
             token_cost=get_setting("tokens_per_url") or "1",
             form={"name": name, "project_type": project_type, "urls": urls},
+            engines=engine_choices(posted_engines(engines_set, use_google, use_bing, use_yandex, use_indexnow)),
         )
     lines = await _lines_from_upload(upload, urls)
     sitemap_note = ""
@@ -533,7 +592,15 @@ async def create_project_route(
         message += " " + result["limit_message"]
     if sitemap_note:
         message += " " + sitemap_note
-    return _notice(f"/app/projects/{project['id']}", message)
+    if autoprocess == "1" and result.get("added"):
+        await run_queue(user_id=user["id"], project_id=project["id"])
+        message += " Started processing the first batch."
+    target_url = _notice(f"/app/projects/{project['id']}", message)
+    if autoprocess == "1":
+        loc = target_url.headers["location"]
+        joiner = "&" if "?" in loc else "?"
+        return RedirectResponse(loc + joiner + "continue=1", status_code=303)
+    return target_url
 
 
 @app.get("/app/projects/{project_id}")
@@ -556,6 +623,11 @@ async def project_detail(project_id: int, request: Request, q: str = "", filter:
         filter=filter,
         token_cost=get_setting("tokens_per_url") or "1",
         speed=_account_speed(get_user(user["id"]) or user),
+        engines=engine_choices(project),
+        engine_banner="" if any(_configured_map().values()) else (
+            "No search engine is configured. Links can still be checked for HTTP status. "
+            "Set INDEXNOW_KEY, or Bing, Yandex, and Google keys, before a submission can be accepted."
+        ),
     )
 
 
@@ -621,6 +693,24 @@ async def remove_project(project_id: int, request: Request):
     return _notice("/app", "Project deleted.")
 
 
+@app.post("/app/projects/{project_id}/engines")
+async def save_project_engines(
+    project_id: int,
+    request: Request,
+    engines_set: str = Form(""),
+    use_google: str = Form(""),
+    use_bing: str = Form(""),
+    use_yandex: str = Form(""),
+    use_indexnow: str = Form(""),
+):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    choice = posted_engines(engines_set or "1", use_google, use_bing, use_yandex, use_indexnow) or {}
+    error = set_engines(user["id"], project_id, choice)
+    return _notice(f"/app/projects/{project_id}", error or "Search engines saved.")
+
+
 @app.post("/app/projects/{project_id}/process")
 async def process_project(project_id: int, request: Request):
     user, redirect = _need(request)
@@ -629,11 +719,25 @@ async def process_project(project_id: int, request: Request):
     if not get_project(project_id, user["id"]):
         raise HTTPException(404, "Project not found")
     result = await run_queue(user_id=user["id"], project_id=project_id)
-    message = f"Processed {result['processed']} link(s)."
+    project = get_project(project_id, user["id"]) or {}
+    queued = int(project.get("queued") or 0)
+    message = f"Processed {result['processed']} this batch. {queued} still queued."
     if result.get("stopped_for_time"):
-        message += " Stopped at the time budget; run again to continue today's quota."
-    if result["processed"] == 0:
+        message += " Stopped at the time limit; the next batch continues automatically."
+    if result["processed"] == 0 and queued == 0:
         message = "Nothing was due. The daily speed may already be used, or the queue is empty."
+    elif result["processed"] == 0 and not result.get("stopped_for_time"):
+        message = "Nothing was due. The daily speed may already be used, or the queue is empty."
+    wants_json = "application/json" in (request.headers.get("accept") or "")
+    if wants_json:
+        return {
+            "ok": True,
+            "processed": result["processed"],
+            "queued": queued,
+            "done": queued == 0,
+            "continue": queued > 0 and (result["processed"] > 0 or bool(result.get("stopped_for_time"))),
+            "message": message,
+        }
     return _notice(f"/app/projects/{project_id}", message)
 
 
@@ -644,10 +748,19 @@ async def add_project_urls(
     urls: str = Form(""),
     upload: Optional[UploadFile] = File(None),
     sitemap_url: str = Form(""),
+    autoprocess: str = Form(""),
+    engines_set: str = Form(""),
+    use_google: str = Form(""),
+    use_bing: str = Form(""),
+    use_yandex: str = Form(""),
+    use_indexnow: str = Form(""),
 ):
     user, redirect = _need(request)
     if redirect:
         return redirect
+    choice = posted_engines(engines_set, use_google, use_bing, use_yandex, use_indexnow)
+    if choice is not None:
+        set_engines(user["id"], project_id, choice)
     project = get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
@@ -666,7 +779,15 @@ async def add_project_urls(
         message += " " + result["limit_message"]
     if sitemap_note:
         message += " " + sitemap_note
-    return _notice(f"/app/projects/{project_id}", message)
+    if autoprocess == "1" and result.get("added"):
+        await run_queue(user_id=user["id"], project_id=project_id)
+        message += " Started processing the first batch."
+    target_url = _notice(f"/app/projects/{project_id}", message)
+    if autoprocess == "1":
+        loc = target_url.headers["location"]
+        joiner = "&" if "?" in loc else "?"
+        return RedirectResponse(loc + joiner + "continue=1", status_code=303)
+    return target_url
 
 
 @app.post("/app/projects/{project_id}/bulk")
@@ -1265,7 +1386,7 @@ async def hub_atom(request: Request):
 
 @app.get("/{key}.txt")
 async def indexnow_key_file(key: str):
-    configured = get_setting("indexnow_key")
+    configured = setting_or_env("indexnow_key", "INDEXNOW_KEY")[0]
     if not configured or key != configured:
         raise HTTPException(404, "Unknown IndexNow key")
     return PlainTextResponse(configured)

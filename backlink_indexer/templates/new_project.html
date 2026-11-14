@@ -25,6 +25,10 @@
   <input type="hidden" name="daily_speed" value="{{ default_speed }}">
   <p class="sub">Unlimited. This account has no per-project pace, token charge, or daily URL cap. Google, Bing, IndexNow, and Yandex quotas still apply.</p>
   {% endif %}
+  <div class="field">Search engines
+    {% include "engines.html" %}
+  </div>
+  <input type="hidden" name="autoprocess" value="1">
   <label class="field">Notes <input name="notes" value="{{ form.notes if form else '' }}"></label>
   <label class="field">Tags <input name="tags" placeholder="guest-post, feet" value="{{ form.tags if form else '' }}"></label>
   <label class="field">Links, one URL per line

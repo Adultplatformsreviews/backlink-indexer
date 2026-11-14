@@ -542,6 +542,10 @@ _PROJECT_COLUMNS = {
     "sent_on": "TEXT NOT NULL DEFAULT ''",
     "notes": "TEXT NOT NULL DEFAULT ''",
     "tags": "TEXT NOT NULL DEFAULT ''",
+    "use_google": "INTEGER NOT NULL DEFAULT 1",
+    "use_bing": "INTEGER NOT NULL DEFAULT 1",
+    "use_yandex": "INTEGER NOT NULL DEFAULT 1",
+    "use_indexnow": "INTEGER NOT NULL DEFAULT 1",
 }
 
 _URL_COLUMNS = {

@@ -6,24 +6,28 @@ import secrets
 from typing import Optional
 
 from .database import get_conn, get_setting, insert_id, tx, utcnow
+from .limits import is_unlimited_email
 
 _ITERATIONS = 120_000
+_SCRYPT_N = 2**14
 
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ITERATIONS)
-    return f"pbkdf2${salt.hex()}${digest.hex()}"
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=8, p=1)
+    return f"scrypt${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password: str, stored: str) -> bool:
     try:
         scheme, salt_hex, digest_hex = stored.split("$", 2)
-        if scheme != "pbkdf2":
+        salt = bytes.fromhex(salt_hex)
+        if scheme == "scrypt":
+            digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=8, p=1)
+        elif scheme == "pbkdf2":
+            digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ITERATIONS)
+        else:
             return False
-        digest = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), _ITERATIONS
-        )
         return hmac.compare_digest(digest.hex(), digest_hex)
     except Exception:
         return False
@@ -33,7 +37,21 @@ def _user_row(row: Optional[dict]) -> Optional[dict]:
     if not row:
         return None
     data = dict(row)
+    data["email"] = (data.get("email") or "").strip().lower()
+    if is_unlimited_email(data["email"]):
+        data["unlimited"] = True
+        if not data.get("is_admin") or data.get("plan_name") != "VIP":
+            with tx() as conn:
+                conn.execute(
+                    "UPDATE users SET is_admin = 1, plan_name = 'VIP' WHERE id = ?",
+                    (data["id"],),
+                )
+            data["is_admin"] = 1
+            data["plan_name"] = "VIP"
+    else:
+        data["unlimited"] = False
     data["is_admin"] = bool(data.get("is_admin"))
+    data["disabled"] = bool(data.get("disabled"))
     return data
 
 
@@ -43,36 +61,86 @@ def get_user(user_id: int) -> Optional[dict]:
 
 
 def get_user_by_username(username: str) -> Optional[dict]:
-    row = get_conn().execute(
-        "SELECT * FROM users WHERE username = ?", (username.strip().lower(),)
-    ).fetchone()
+    key = (username or "").strip().lower()
+    row = get_conn().execute("SELECT * FROM users WHERE username = ?", (key,)).fetchone()
+    if row is None and "@" in key:
+        row = get_conn().execute("SELECT * FROM users WHERE email = ?", (key,)).fetchone()
     return _user_row(row)
 
 
-def create_user(username: str, password: str) -> tuple[Optional[dict], str]:
+def get_user_by_email(email: str) -> Optional[dict]:
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    row = get_conn().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    return _user_row(row)
+
+
+def create_user(username: str, password: str, email: str = "") -> tuple[Optional[dict], str]:
     username = (username or "").strip().lower()
+    email = (email or "").strip().lower()
     if len(username) < 3 or len(username) > 40 or not username.replace("_", "").isalnum():
         return None, "Username must be 3–40 letters, numbers, or underscores."
+    if "@" not in email or len(email) > 200:
+        return None, "Enter a valid email address."
     if len(password or "") < 8:
         return None, "Password must be at least 8 characters."
     if get_user_by_username(username):
         return None, "That username is already taken."
+    if get_user_by_email(email):
+        return None, "That email is already registered."
+    vip = is_unlimited_email(email)
     try:
         tokens = max(0, int(get_setting("signup_tokens") or "100"))
     except ValueError:
         tokens = 100
     now = utcnow()
     with tx() as conn:
-        existing = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         user_id = insert_id(
             conn,
             """INSERT INTO users
                (username, password_hash, plan_name, plan_until, token_balance,
-                daily_speed_cap, project_limit, is_admin, created_at)
-               VALUES (?, ?, 'Free', '', ?, 100, 5, ?, ?)""",
-            (username, hash_password(password), tokens, 1 if int(existing) == 0 else 0, now),
+                daily_speed_cap, project_limit, is_admin, created_at, email, disabled)
+               VALUES (?, ?, ?, '', ?, 100, 5, ?, ?, ?, 0)""",
+            (
+                username,
+                hash_password(password),
+                "VIP" if vip else "Free",
+                tokens,
+                1 if vip else 0,
+                now,
+                email,
+            ),
         )
     return get_user(user_id), ""
+
+
+def list_users() -> list[dict]:
+    rows = get_conn().execute("SELECT * FROM users ORDER BY id").fetchall()
+    return [user for row in rows if (user := _user_row(row))]
+
+
+def set_user_password(user_id: int, password: str) -> str:
+    if len(password or "") < 8:
+        return "Password must be at least 8 characters."
+    if not get_user(user_id):
+        return "User not found."
+    with tx() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user_id))
+    return ""
+
+
+def set_user_disabled(user_id: int, disabled: bool) -> str:
+    user = get_user(user_id)
+    if not user:
+        return "User not found."
+    if disabled and is_unlimited_email(user.get("email") or ""):
+        return "The operator account cannot be disabled."
+    with tx() as conn:
+        conn.execute("UPDATE users SET disabled = ? WHERE id = ?", (1 if disabled else 0, user_id))
+        if disabled:
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    return ""
 
 
 def create_session(user_id: int) -> str:
@@ -94,7 +162,10 @@ def user_from_session(token: str) -> Optional[dict]:
            WHERE s.token = ?""",
         (token,),
     ).fetchone()
-    return _user_row(row)
+    user = _user_row(row)
+    if user and user.get("disabled"):
+        return None
+    return user
 
 
 def delete_session(token: str) -> None:
@@ -164,4 +235,7 @@ def user_from_api_key(raw: str) -> Optional[dict]:
            WHERE k.key_hash = ?""",
         (digest,),
     ).fetchone()
-    return _user_row(row)
+    user = _user_row(row)
+    if user and user.get("disabled"):
+        return None
+    return user

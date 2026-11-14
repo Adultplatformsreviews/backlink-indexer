@@ -21,6 +21,8 @@ def client():
             "sessions",
             "projects",
             "owned_hosts",
+            "daily_usage",
+            "login_codes",
             "users",
         ):
             conn.execute(f"DELETE FROM {table}")
@@ -29,9 +31,13 @@ def client():
         yield test_client
 
 
-def signup(client, username="ada", password="password1"):
-    response = client.post("/signup", data={"username": username, "password": password}, follow_redirects=False)
-    assert response.status_code == 303
+def signup(client, username="ada", password="password1", email=None):
+    response = client.post(
+        "/signup",
+        data={"username": username, "email": email or f"{username}@example.com", "password": password},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
     return response
 
 
@@ -97,7 +103,7 @@ def test_signup_project_tokens_and_daily_speed(client, monkeypatch):
     assert "spicyranked" in detail.text
     assert "Unknown" in detail.text
     credits = client.get("/app/plans")
-    assert "95" in credits.text
+    assert "5 of 100 used today" in credits.text
 
     async def fake_precheck(http, url, target, include, cache):
         return {
@@ -132,7 +138,7 @@ def test_signup_project_tokens_and_daily_speed(client, monkeypatch):
 
 
 def test_indexnow_submission_is_not_indexed(client, monkeypatch):
-    signup(client, "owner", "password1")
+    signup(client, "owner", "password1", email="muhammadzeeshanhaideroffical@gmail.com")
     client.post(
         "/app/settings",
         data={"action": "add-host", "host": "example.com"},
@@ -164,8 +170,8 @@ def test_indexnow_submission_is_not_indexed(client, monkeypatch):
                 "robots_disallow": False, "canonical": url, "canonicalized_away": False,
                 "has_link": False, "link_rel": "none", "link_count": 0, "link_details_json": "[]"}
 
-    async def fake_submit(http, urls, key, key_location):
-        return {"ok": True, "detail": "HTTP 200", "count": 1}
+    async def fake_submit(http, urls, key, key_location, endpoint=None):
+        return {"ok": True, "detail": "HTTP 200", "count": 1, "state": "accepted", "endpoint": endpoint}
 
     monkeypatch.setattr("backlink_indexer.queue.precheck_url", fake_precheck)
     monkeypatch.setattr("backlink_indexer.queue.indexnow.submit", fake_submit)
@@ -181,8 +187,8 @@ def test_indexnow_submission_is_not_indexed(client, monkeypatch):
     ).fetchone()
     close_conn()
     assert row["queue_status"] == "sent"
-    assert row["yandex_state"] == "submitted"
-    assert row["bing_state"] == "submitted"
+    assert row["yandex_state"] == "accepted"
+    assert row["bing_state"] == "accepted"
     assert row["google_state"] == "unknown"
 
 
@@ -250,6 +256,86 @@ def test_banner_hidden_when_database_configured(client, monkeypatch):
     page = client.get("/app")
     assert "Data is not persistent" not in page.text
     assert "POSTGRES_URL" not in page.text or "persistent" in page.text.lower()
+
+
+def test_username_password_admin_and_daily_cap(client):
+    signup(client, "Ada", "password1", email="Ada@Example.com")
+    stored = get_conn().execute("SELECT username, email, password_hash, is_admin FROM users").fetchone()
+    close_conn()
+    assert stored["username"] == "ada"
+    assert stored["email"] == "ada@example.com"
+    assert stored["is_admin"] == 0
+    assert stored["password_hash"].startswith("scrypt$")
+    assert "password1" not in stored["password_hash"]
+
+    client.post("/logout")
+    wrong = client.post("/login", data={"username": "ADA", "password": "nope-nope"}, follow_redirects=False)
+    assert wrong.status_code == 400
+    by_email = client.post(
+        "/login",
+        data={"username": "ADA@example.com", "password": "password1"},
+        follow_redirects=False,
+    )
+    assert by_email.status_code == 303
+    assert "Only the operator" in client.get("/app/users").text
+    duplicate = client.post(
+        "/signup",
+        data={"username": "ada", "email": "other@example.com", "password": "password1"},
+        follow_redirects=False,
+    )
+    assert duplicate.status_code == 400
+
+    capped = client.post(
+        "/app/projects",
+        data={
+            "name": "Cap",
+            "project_type": "indexing",
+            "target_domain": "example.com",
+            "daily_speed": "10",
+            "urls": "\n".join(f"https://example.com/u{i}" for i in range(101)),
+        },
+        follow_redirects=True,
+    )
+    assert "Daily limit" in capped.text
+    count = get_conn().execute("SELECT COUNT(*) AS c FROM urls").fetchone()["c"]
+    ada_id = get_conn().execute("SELECT id FROM users WHERE username = 'ada'").fetchone()["id"]
+    close_conn()
+    assert count == 100
+
+    client.post("/logout")
+    signup(client, "boss", "password1", email="MuhammadZeeshanHaiderOffical@gmail.com")
+    assert "Unlimited" in client.get("/app/plans").text
+    users = client.get("/app/users")
+    assert "ada" in users.text
+    assert "100 of 100" in users.text or "100 of 100" in users.text
+    assert "VIP" in users.text
+    client.post(f"/app/users/{ada_id}/password", data={"password": "newpass99"}, follow_redirects=False)
+    client.post(f"/app/users/{ada_id}/disable", data={"disabled": "1"}, follow_redirects=False)
+    boss = get_conn().execute("SELECT id FROM users WHERE username = 'boss'").fetchone()["id"]
+    close_conn()
+    blocked_op = client.post(f"/app/users/{boss}/disable", data={"disabled": "1"}, follow_redirects=True)
+    assert "cannot be disabled" in blocked_op.text
+    client.post("/logout")
+    blocked = client.post("/login", data={"username": "ada", "password": "newpass99"}, follow_redirects=False)
+    assert blocked.status_code == 400
+
+
+def test_password_reset_requires_a_mailer_and_login_codes_are_absent(client, monkeypatch):
+    for key in ("RESEND_API_KEY", "EMAIL_FROM", "SMTP_HOST", "SMTP_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    page = client.get("/reset")
+    assert "administrator" in page.text.lower()
+    posted = client.post("/reset", data={"email": "ada@example.com"})
+    assert posted.status_code == 400
+    assert client.get("/login/magic").status_code == 404
+    assert client.get("/login/admin").status_code == 404
+    assert client.post("/login/email").status_code == 404
+    short = client.post(
+        "/signup",
+        data={"username": "tiny", "email": "tiny@example.com", "password": "short"},
+        follow_redirects=False,
+    )
+    assert short.status_code == 400
 
 
 def test_csv_export(client):

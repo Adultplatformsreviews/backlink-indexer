@@ -3,11 +3,12 @@
 {% block content %}
 <section class="card auth-card">
   <h1>Create an account</h1>
-  <p class="sub">The first account is the operator and can save IndexNow, SERP, and Google keys. New accounts start on the Free tariff with starter tokens.</p>
+  <p class="sub">Choose a username, email, and a password of at least 8 characters. The password is stored as a scrypt hash.</p>
   <form method="post" action="/signup">
-    <label class="field">Username <input name="username" autocomplete="username" required></label>
+    <label class="field">Username <input name="username" autocomplete="username" required minlength="3" maxlength="40" value="{{ username or '' }}"></label>
+    <label class="field">Email <input name="email" type="email" autocomplete="email" required value="{{ email or '' }}"></label>
     <label class="field">Password <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
-    <button class="btn red" type="submit">Sign up</button>
+    <button class="btn red" type="submit">Create account</button>
   </form>
   <p class="sub">Already registered? <a href="/login">Log in</a></p>
 </section>

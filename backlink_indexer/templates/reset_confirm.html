@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+{% block title %}Choose a password · Backlink Indexer{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>Choose a new password</h1>
+  <form method="post" action="/reset/confirm">
+    <input type="hidden" name="token" value="{{ token or '' }}">
+    <label class="field">New password <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+    <button class="btn red" type="submit">Save password</button>
+  </form>
+</section>
+{% endblock %}

@@ -18,12 +18,15 @@
     </div>
   </div>
   <label class="field">Target domain <input name="target_domain" value="{{ default_target }}" placeholder="example.com"></label>
-  <label class="field">Daily speed <input name="daily_speed" type="number" min="1" value="{{ default_speed }}"> <span class="sub">{{ speed.free }} per day still free of {{ speed.cap }}.</span></label>
+  <label class="field">Daily pace <input name="daily_speed" type="number" min="1" value="{{ default_speed }}"> <span class="sub">How many links this project asks the queue to handle per day. Engine quotas can still slow that down.</span></label>
+  <label class="field">Notes <input name="notes" value="{{ form.notes if form else '' }}"></label>
+  <label class="field">Tags <input name="tags" placeholder="guest-post, feet" value="{{ form.tags if form else '' }}"></label>
   <label class="field">Links, one URL per line
     <textarea name="urls" rows="8" placeholder="https://example.com/article">{{ form.urls if form else '' }}</textarea>
   </label>
-  <label class="field">CSV or TXT upload <input type="file" name="upload" accept=".csv,.txt,.tsv,text/csv,text/plain"></label>
-  <p class="sub">Each accepted URL costs {{ token_cost }} token. Balance: {{ user.token_balance }}.</p>
+  <label class="field">CSV or TXT upload <input type="file" name="upload" accept=".csv,.txt,.tsv,.xml,text/csv,text/plain"></label>
+  <label class="field">Sitemap URL <input name="sitemap_url" type="url" placeholder="https://example.com/sitemap.xml"></label>
+  <p class="sub">{% if user.unlimited %}VIP: no daily URL cap.{% else %}{{ usage.label }}. New URLs count toward the daily limit.{% endif %} Duplicates are skipped.</p>
   <button class="btn red" type="submit">Create project</button>
 </form>
 {% endblock %}

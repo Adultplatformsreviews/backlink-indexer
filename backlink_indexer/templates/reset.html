@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block title %}Reset password · Backlink Indexer{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>Reset password</h1>
+  {% if mail_ready %}
+  <p class="sub">We email a single-use link to choose a new password. The email never contains the password.</p>
+  <form method="post" action="/reset">
+    <label class="field">Email <input name="email" type="email" autocomplete="email" required></label>
+    <button class="btn red" type="submit">Email a reset link</button>
+  </form>
+  {% else %}
+  <p class="error">{{ mail_error }} An administrator can set a new password from the users page. Sign-in does not need email.</p>
+  {% endif %}
+  <p class="sub"><a href="/login">Back to log in</a></p>
+</section>
+{% endblock %}

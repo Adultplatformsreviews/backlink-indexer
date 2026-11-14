@@ -9,6 +9,13 @@ import httpx
 from ..config import USER_AGENT
 
 INDEXNOW_ENDPOINT = "https://api.indexnow.org/indexnow"
+# Participating engines also publish their own IndexNow endpoints. Submitting
+# to each one is still only an acceptance, not an index confirmation.
+INDEXNOW_ENDPOINTS = {
+    "indexnow": "https://api.indexnow.org/indexnow",
+    "bing": "https://www.bing.com/indexnow",
+    "yandex": "https://yandex.com/indexnow",
+}
 
 
 def generate_key() -> str:
@@ -36,6 +43,7 @@ async def submit(
     urls: list[str],
     key: str,
     key_location: str,
+    endpoint: str = INDEXNOW_ENDPOINT,
 ) -> dict:
     """Submit a list of URLs that all share the host in key_location.
 
@@ -43,9 +51,15 @@ async def submit(
     Callers must group by host first.
     """
     if not urls:
-        return {"ok": False, "status": None, "detail": "No URLs to submit."}
+        return {"ok": False, "status": None, "state": "rejected", "detail": "No URLs to submit.", "endpoint": endpoint}
     if not key:
-        return {"ok": False, "status": None, "detail": "IndexNow key is not configured."}
+        return {
+            "ok": False,
+            "status": None,
+            "state": "rejected",
+            "detail": "IndexNow key is not configured.",
+            "endpoint": endpoint,
+        }
     host = urlparse(urls[0]).hostname or urlparse(key_location).hostname or ""
     payload = {
         "host": host,
@@ -55,13 +69,19 @@ async def submit(
     }
     try:
         resp = await client.post(
-            INDEXNOW_ENDPOINT,
+            endpoint,
             json=payload,
             timeout=30,
             headers={"User-Agent": USER_AGENT, "Content-Type": "application/json"},
         )
     except Exception as exc:
-        return {"ok": False, "status": None, "detail": f"IndexNow request failed: {exc}"}
+        return {
+            "ok": False,
+            "status": None,
+            "detail": f"IndexNow request to {endpoint} failed: {exc}",
+            "endpoint": endpoint,
+            "state": "rejected",
+        }
     # 200 or 202 are success; 422 usually means key/host mismatch.
     ok = resp.status_code in {200, 202}
     body = (resp.text or "")[:500]
@@ -73,4 +93,25 @@ async def submit(
             " — IndexNow rejected the payload. The key file must be publicly "
             "reachable on the same host as the submitted URLs."
         )
-    return {"ok": ok, "status": resp.status_code, "detail": detail, "host": host, "count": len(urls)}
+    return {
+        "ok": ok,
+        "status": resp.status_code,
+        "detail": detail,
+        "host": host,
+        "count": len(urls),
+        "endpoint": endpoint,
+        "state": "accepted" if ok else "rejected",
+    }
+
+
+async def submit_all(
+    client: httpx.AsyncClient,
+    urls: list[str],
+    key: str,
+    key_location: str,
+) -> dict[str, dict]:
+    """POST the same IndexNow payload to the shared hub and to Bing and Yandex."""
+    results = {}
+    for name, endpoint in INDEXNOW_ENDPOINTS.items():
+        results[name] = await submit(client, urls, key, key_location, endpoint=endpoint)
+    return results

@@ -18,6 +18,20 @@
     </select>
   </label>
   <label class="field">IndexNow key <input name="indexnow_key" value="{{ settings.indexnow_key }}"></label>
+  <h2>Bing Webmaster</h2>
+  <p class="sub">SubmitUrlBatch accepts URLs only for a site verified in Bing Webmaster Tools. A 200 is “Accepted”, not “Indexed”. Daily cap is 10,000 URLs.</p>
+  <label class="field">API key
+    <input name="bing_webmaster_api_key" value="{{ settings.bing_webmaster_api_key }}" autocomplete="off" placeholder="{% if settings.bing_from_env %}Using BING_WEBMASTER_API_KEY{% else %}Or set BING_WEBMASTER_API_KEY{% endif %}">
+  </label>
+  <label class="field">Verified site URL <input name="bing_site_url" value="{{ settings.bing_site_url }}" placeholder="https://example.com/"></label>
+  <h2>Yandex</h2>
+  <p class="sub">IndexNow is sent to yandex.com and bing.com as well as api.indexnow.org. Recrawl uses the Yandex Webmaster API and only runs when the daily quota endpoint reports remainder left.</p>
+  <label class="field">OAuth token
+    <input name="yandex_webmaster_token" value="{{ settings.yandex_webmaster_token }}" autocomplete="off" placeholder="{% if settings.yandex_token_from_env %}Using YANDEX_WEBMASTER_TOKEN{% else %}Or set YANDEX_WEBMASTER_TOKEN{% endif %}">
+  </label>
+  <label class="field">User id <input name="yandex_webmaster_user_id" value="{{ settings.yandex_webmaster_user_id }}" placeholder="YANDEX_WEBMASTER_USER_ID"></label>
+  <label class="field">Host id <input name="yandex_webmaster_host_id" value="{{ settings.yandex_webmaster_host_id }}" placeholder="YANDEX_WEBMASTER_HOST_ID"></label>
+  <label class="field">Verified host <input name="yandex_site_host" value="{{ settings.yandex_site_host }}" placeholder="example.com"></label>
   <label class="field">Tokens per URL <input name="tokens_per_url" value="{{ settings.tokens_per_url }}"></label>
   <label class="field">SERP provider
     <select name="serp_provider">

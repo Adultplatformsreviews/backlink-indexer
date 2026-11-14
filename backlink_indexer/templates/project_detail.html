@@ -10,7 +10,7 @@
     </div>
     <h1 class="page-title" style="margin-bottom:.2rem">{{ project.name }}</h1>
     <p class="sub">{{ project.target_domain }} · {{ project.sent }} sent of {{ project.total }} · queue {{ project.queued }} · speed {{ project.daily_speed }}/day</p>
-    <p class="sub">G {{ project.google_indexed }} · Y {{ project.yandex_indexed }} · B {{ project.bing_indexed }} confirmed indexed</p>
+    <p class="sub">Indexed G {{ project.google_indexed }} · Y {{ project.yandex_indexed }} · B {{ project.bing_indexed }}. Accepted submissions G {{ project.google_accepted }} · Y {{ project.yandex_accepted }} · B {{ project.bing_accepted }}.</p>
   </div>
   <div class="side-actions">
     {% if project.run_status == 'running' %}
@@ -22,7 +22,7 @@
     <a class="btn" href="/app/projects/{{ project.id }}/export.csv?filter={{ filter }}&q={{ q }}">Export CSV</a>
   </div>
 </section>
-<p class="honest">Google “Indexed” comes from a SERP check or your manual mark. Bing and Yandex show “Submitted” only after IndexNow accepts a host you own. Unknown stays unknown.</p>
+<p class="honest">“Indexed” comes only from a SERP check or your manual mark. “Accepted” means Bing, Yandex, or IndexNow took the submission. A submission is never an index confirmation.</p>
 <form class="card" method="post" action="/app/projects/{{ project.id }}/urls" enctype="multipart/form-data">
   <label class="field">Add links
     <textarea name="urls" rows="4" placeholder="https://example.com/page"></textarea>

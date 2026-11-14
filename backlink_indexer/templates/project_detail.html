@@ -39,7 +39,7 @@
   {% for key, label in [('all','All'),('queued','Queued'),('sent','Sent'),('indexed','Indexed'),('unknown','Unknown'),('dead','Not live'),('failed','Failed'),('rejected','Rejected')] %}
   <a class="tab {{ 'on' if filter == key else '' }}" href="/app/projects/{{ project.id }}?filter={{ key }}&per={{ listing.per }}&q={{ q }}">{{ label }}</a>
   {% endfor %}
-  <span class="search"><input name="q" value="{{ q }}" placeholder="Filter by URL" aria-label="Filter by URL"><input type="hidden" name="filter" value="{{ filter }}"><input type="hidden" name="per" value="{{ listing.per }}"><button class="btn" type="submit">Search</button></span>
+  <span class="search"><input name="q" value="{{ q }}" placeholder="Filter by URL" aria-label="Filter by URL"><input type="hidden" name="filter" value="{{ filter }}"><input type="hidden" name="per" value="{{ 'all' if listing.per == 0 else listing.per }}"><button class="btn" type="submit">Search</button></span>
 </form>
 <form method="post" action="/app/projects/{{ project.id }}/bulk">
   <div class="table-wrap">
@@ -111,10 +111,11 @@
   <ol id="historyList" class="timeline"></ol>
 </dialog>
 <div class="pager">
-  Show by
-  {% for n in (5, 10, 25) %}
+  Show
+  {% for n in (10, 50, 100) %}
     <a class="{{ 'on' if listing.per == n else '' }}" href="/app/projects/{{ project.id }}?per={{ n }}&filter={{ filter }}&q={{ q }}">{{ n }}</a>
   {% endfor %}
+  <a class="{{ 'on' if listing.per == 0 else '' }}" href="/app/projects/{{ project.id }}?per=all&filter={{ filter }}&q={{ q }}">All</a>
   <span>{{ listing.page }} / {{ listing.pages }} · {{ listing.total }} links</span>
   {% if listing.page > 1 %}<a href="/app/projects/{{ project.id }}?page={{ listing.page - 1 }}&per={{ listing.per }}&filter={{ filter }}&q={{ q }}">Previous</a>{% endif %}
   {% if listing.page < listing.pages %}<a href="/app/projects/{{ project.id }}?page={{ listing.page + 1 }}&per={{ listing.per }}&filter={{ filter }}&q={{ q }}">Next</a>{% endif %}

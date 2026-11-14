@@ -5,7 +5,7 @@
 <h1 class="page-title">Plans {% if user.unlimited %}<span class="vip-badge">VIP</span>{% endif %}</h1>
 <div class="card">
   {% if user.unlimited %}
-  <p>This operator account is <strong>VIP</strong>. Projects and URLs are unlimited. Search-engine quotas still apply and unused submissions wait until the next day.</p>
+  <p>This operator account is <strong>Unlimited</strong>. There is no daily URL counter, token charge, or per-project pace. The queue sends until an external engine quota is used, then the link waits until the next day.</p>
   {% else %}
   <p><strong>{{ usage.label }}</strong>. You can add 100 URLs each calendar day. The count resets daily.</p>
   {% endif %}

@@ -440,6 +440,107 @@ def test_import_respects_daily_limit(client):
     assert count == 1
 
 
+def test_blank_email_operator_is_upgraded_on_login(client, monkeypatch):
+    """Reproduce the live row: username is the operator local part and email is blank."""
+    from backlink_indexer.auth import promote_operator_accounts
+
+    signup(client, "muhammadzeeshanhaideroffical", "password1", email="other@example.com")
+    with tx() as conn:
+        conn.execute(
+            """UPDATE users SET email = '', is_admin = 0, plan_name = 'Free'
+               WHERE username = 'muhammadzeeshanhaideroffical'"""
+        )
+    close_conn()
+    client.post("/logout")
+    signed = client.post(
+        "/login",
+        data={"username": "MuhammadZeeshanHaiderOffical", "password": "password1"},
+        follow_redirects=False,
+    )
+    assert signed.status_code == 303
+    page = client.get("/app")
+    assert "Unlimited" in page.text
+    assert "0 of 100 used today" not in page.text
+    assert "Free 100" not in page.text
+    row = get_conn().execute(
+        "SELECT email, is_admin, plan_name FROM users WHERE username = 'muhammadzeeshanhaideroffical'"
+    ).fetchone()
+    close_conn()
+    assert row["email"] == "muhammadzeeshanhaideroffical@gmail.com"
+    assert row["is_admin"] == 1
+    assert row["plan_name"] == "VIP"
+
+    from backlink_indexer.limits import is_unlimited_email
+
+    monkeypatch.setenv("UNLIMITED_EMAILS", "   ")
+    assert is_unlimited_email("muhammadzeeshanhaideroffical@gmail.com")
+    monkeypatch.setenv("UNLIMITED_EMAILS", "other@example.com")
+    assert not is_unlimited_email("muhammadzeeshanhaideroffical@gmail.com")
+    monkeypatch.delenv("UNLIMITED_EMAILS", raising=False)
+    assert promote_operator_accounts() == 0
+
+
+def test_different_email_is_not_operator_even_if_username_matches_local_part(client):
+    signup(client, "muhammadzeeshanhaideroffical", "password1", email="someoneelse@example.com")
+    with tx() as conn:
+        conn.execute(
+            "UPDATE users SET is_admin = 1, plan_name = 'VIP' WHERE username = 'muhammadzeeshanhaideroffical'"
+        )
+    close_conn()
+    page = client.get("/app")
+    assert "0 of 100 used today" in page.text
+    assert "Unlimited" not in page.text
+    row = get_conn().execute(
+        "SELECT email, is_admin, plan_name FROM users WHERE username = 'muhammadzeeshanhaideroffical'"
+    ).fetchone()
+    close_conn()
+    assert row["email"] == "someoneelse@example.com"
+    assert row["is_admin"] == 0
+    assert row["plan_name"] == "Free"
+
+
+def test_spaced_operator_email_and_queue_ignores_daily_speed(client, monkeypatch):
+    signup(client, "boss", "password1", email="muhammadzeeshanhaideroffical@gmail.com")
+    with tx() as conn:
+        conn.execute(
+            """UPDATE users SET email = '  MuhammadZeeshanHaiderOffical@gmail.com  ',
+               is_admin = 0, plan_name = 'Free' WHERE username = 'boss'"""
+        )
+    close_conn()
+    client.post("/logout")
+    client.post("/login", data={"username": "boss", "password": "password1"}, follow_redirects=False)
+    created = client.post(
+        "/app/projects",
+        data={
+            "name": "All of them",
+            "project_type": "indexing",
+            "target_domain": "example.com",
+            "daily_speed": "1",
+            "urls": "\n".join(f"https://example.com/op{i}" for i in range(3)),
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+
+    async def fake_precheck(http, url, target, include, cache):
+        return {
+            "final_url": url, "http_status": 200, "is_live": True, "fetch_error": None,
+            "content_type": "text/html", "meta_robots": "", "x_robots_tag": "", "noindex": False,
+            "robots_disallow": False, "canonical": url, "canonicalized_away": False,
+            "has_link": False, "link_rel": "none", "link_count": 0, "link_details_json": "[]",
+        }
+
+    monkeypatch.setattr("backlink_indexer.queue.precheck_url", fake_precheck)
+    path = created.headers["location"].split("?")[0]
+    client.post(path + "/process", follow_redirects=True)
+    rows = get_conn().execute("SELECT queue_status FROM urls ORDER BY id").fetchall()
+    stored = get_conn().execute("SELECT email, plan_name FROM users WHERE username = 'boss'").fetchone()
+    close_conn()
+    assert [row["queue_status"] for row in rows] == ["sent", "sent", "sent"]
+    assert stored["email"] == "muhammadzeeshanhaideroffical@gmail.com"
+    assert stored["plan_name"] == "VIP"
+
+
 def test_csv_export(client):
     signup(client, "export", "password1")
     created = client.post(

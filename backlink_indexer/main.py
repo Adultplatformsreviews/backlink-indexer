@@ -99,6 +99,9 @@ async def startup() -> None:
     # Database setup must not prevent the process from importing or serving /health.
     try:
         init_db()
+        from .auth import promote_operator_accounts
+
+        promote_operator_accounts()
     except Exception:
         pass
     try:
@@ -229,9 +232,12 @@ async def _fetch_sitemap(url: str) -> tuple[list[str], str]:
 
 
 def _account_speed(user: dict) -> dict:
-    cap = int(user.get("daily_speed_cap") or 0)
     used = allocated_speed(user["id"])
-    return {"cap": cap, "used": used, "free": max(0, cap - used), "projects": active_count(user["id"])}
+    projects = active_count(user["id"])
+    if user.get("unlimited"):
+        return {"cap": None, "used": used, "free": None, "projects": projects, "unlimited": True}
+    cap = int(user.get("daily_speed_cap") or 0)
+    return {"cap": cap, "used": used, "free": max(0, cap - used), "projects": projects, "unlimited": False}
 
 
 # ---------------------------------------------------------------------------
@@ -1061,7 +1067,20 @@ async def v1_credits(request: Request):
     user = _bearer_user(request)
     if not user:
         raise HTTPException(401, "Send Authorization: Bearer <api key>.")
-    return {"token_balance": user["token_balance"], "daily_speed_cap": user["daily_speed_cap"], "plan": user["plan_name"]}
+    if user.get("unlimited"):
+        return {
+            "unlimited": True,
+            "plan": "VIP",
+            "token_balance": None,
+            "daily_speed_cap": None,
+            "note": "No in-app URL, speed, or token limit. Engine quotas still apply.",
+        }
+    return {
+        "unlimited": False,
+        "token_balance": user["token_balance"],
+        "daily_speed_cap": user["daily_speed_cap"],
+        "plan": user["plan_name"],
+    }
 
 
 @app.get("/api/v1/campaigns")

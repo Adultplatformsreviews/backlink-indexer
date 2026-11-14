@@ -11,6 +11,7 @@ from typing import Any, Optional
 import httpx
 
 from .config import FETCH_CONCURRENCY, PUBLIC_BASE_URL, USER_AGENT
+from .limits import is_unlimited_email, normalize_email, operator_email_for_username
 from .database import get_conn, get_setting, get_settings, set_setting, tx, utcnow
 from .services import bing_webmaster, google_indexing, indexnow, serp, websub, yandex_webmaster
 from .services.quotas import consume as consume_quota
@@ -45,10 +46,29 @@ def _iso_minutes_ago(minutes: int) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _owner_is_operator(user_id: int) -> bool:
+    row = get_conn().execute(
+        "SELECT email, username FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if not row:
+        return False
+    email = normalize_email(row["email"] or "") or operator_email_for_username(row["username"] or "")
+    return is_unlimited_email(email)
+
+
 def allowance(project: dict) -> int:
-    """How many queued links this run may touch without passing the daily speed."""
+    """How many queued links this run may touch.
+
+    Operator projects ignore the per-project daily speed. External engine
+    quotas, and the run's time budget, are what stop the queue.
+    """
+    if project.get("run_status") != "running":
+        return 0
+    if _owner_is_operator(int(project.get("user_id") or 0)):
+        return 1_000_000
     speed = max(0, int(project.get("daily_speed") or 0))
-    if speed == 0 or project.get("run_status") != "running":
+    if speed == 0:
         return 0
     sent_today = int(project.get("sent_today") or 0) if project.get("sent_on") == _today() else 0
     remaining = max(0, speed - sent_today)

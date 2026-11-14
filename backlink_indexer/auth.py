@@ -6,7 +6,7 @@ import secrets
 from typing import Optional
 
 from .database import get_conn, get_setting, insert_id, tx, utcnow
-from .limits import is_unlimited_email
+from .limits import is_unlimited_email, normalize_email, operator_email_for_username
 
 _ITERATIONS = 120_000
 _SCRYPT_N = 2**14
@@ -34,25 +34,64 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 def _user_row(row: Optional[dict]) -> Optional[dict]:
+    """Admin and VIP follow the stored email on every read, not the signup order."""
     if not row:
         return None
     data = dict(row)
-    data["email"] = (data.get("email") or "").strip().lower()
-    if is_unlimited_email(data["email"]):
-        data["unlimited"] = True
-        if not data.get("is_admin") or data.get("plan_name") != "VIP":
+    raw_email = data.get("email") or ""
+    email = normalize_email(raw_email)
+    if not email:
+        email = operator_email_for_username(data.get("username") or "")
+    data["email"] = email
+    operator = is_unlimited_email(email)
+    data["unlimited"] = operator
+    if operator:
+        if raw_email != email or not data.get("is_admin") or data.get("plan_name") != "VIP":
             with tx() as conn:
                 conn.execute(
-                    "UPDATE users SET is_admin = 1, plan_name = 'VIP' WHERE id = ?",
+                    "UPDATE users SET email = ?, is_admin = 1, plan_name = 'VIP' WHERE id = ?",
+                    (email, data["id"]),
+                )
+        data["is_admin"] = 1
+        data["plan_name"] = "VIP"
+    else:
+        if data.get("is_admin") or data.get("plan_name") == "VIP":
+            with tx() as conn:
+                conn.execute(
+                    """UPDATE users SET is_admin = 0,
+                       plan_name = CASE WHEN plan_name = 'VIP' THEN 'Free' ELSE plan_name END
+                       WHERE id = ?""",
                     (data["id"],),
                 )
-            data["is_admin"] = 1
-            data["plan_name"] = "VIP"
-    else:
-        data["unlimited"] = False
+        data["is_admin"] = 0
+        if data.get("plan_name") == "VIP":
+            data["plan_name"] = "Free"
     data["is_admin"] = bool(data.get("is_admin"))
     data["disabled"] = bool(data.get("disabled"))
     return data
+
+
+def promote_operator_accounts() -> int:
+    """Upgrade every existing row whose email is an operator address.
+
+    Blank-email rows are filled only when the username is that address's
+    local part. A different stored email is left as a normal account.
+    """
+    rows = get_conn().execute("SELECT * FROM users").fetchall()
+    changed = 0
+    for row in rows:
+        before = (
+            normalize_email(row["email"] or ""),
+            int(row["is_admin"] or 0),
+            row["plan_name"] or "",
+        )
+        user = _user_row(row)
+        if not user:
+            continue
+        after = (user["email"], 1 if user["is_admin"] else 0, user["plan_name"])
+        if after != before:
+            changed += 1
+    return changed
 
 
 def get_user(user_id: int) -> Optional[dict]:
@@ -64,7 +103,10 @@ def get_user_by_username(username: str) -> Optional[dict]:
     key = (username or "").strip().lower()
     row = get_conn().execute("SELECT * FROM users WHERE username = ?", (key,)).fetchone()
     if row is None and "@" in key:
-        row = get_conn().execute("SELECT * FROM users WHERE email = ?", (key,)).fetchone()
+        row = get_conn().execute(
+            "SELECT * FROM users WHERE lower(trim(email)) = ?",
+            (key,),
+        ).fetchone()
     return _user_row(row)
 
 
@@ -72,7 +114,10 @@ def get_user_by_email(email: str) -> Optional[dict]:
     email = (email or "").strip().lower()
     if not email:
         return None
-    row = get_conn().execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    row = get_conn().execute(
+        "SELECT * FROM users WHERE lower(trim(email)) = ?",
+        (email,),
+    ).fetchone()
     return _user_row(row)
 
 

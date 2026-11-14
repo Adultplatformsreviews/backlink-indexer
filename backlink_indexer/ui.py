@@ -9,7 +9,8 @@ from fastapi.templating import Jinja2Templates
 
 from . import __version__
 from .auth import user_from_session
-from .database import bootstrap_db, get_conn
+from .config import DEFAULT_YANDEX_VERIFICATION
+from .database import bootstrap_db, get_conn, get_setting
 from .limits import usage_status
 from .projects import TYPE_LABELS, archive_count, active_count
 from .services.quotas import snapshot as quota_snapshot
@@ -85,6 +86,16 @@ def nav_counts(user_id: int) -> dict:
     }
 
 
+def site_verification() -> dict[str, str]:
+    """Meta-tag values for public pages. An empty Yandex setting uses the built-in code."""
+    yandex = (get_setting("yandex_verification") or "").strip()
+    google = (get_setting("google_site_verification") or "").strip()
+    return {
+        "yandex_verification": yandex or DEFAULT_YANDEX_VERIFICATION,
+        "google_site_verification": google,
+    }
+
+
 def render(request: Request, name: str, status_code: int = 200, **ctx):
     user = ctx.pop("user", None)
     if user is None:
@@ -106,6 +117,7 @@ def render(request: Request, name: str, status_code: int = 200, **ctx):
         base["usage"] = usage_status(user)
         base["engine_quotas"] = quota_snapshot()
     report = bootstrap_db()
+    base.update(site_verification())
     base["ephemeral"] = report["ephemeral_storage"]
     base["database_env"] = report["database_env"]
     base["database_error"] = report["database_error"]

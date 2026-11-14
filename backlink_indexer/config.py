@@ -28,6 +28,7 @@ DB_PATH = DATA_DIR / "app.db"
 SA_PATH = DATA_DIR / "google-service-account.json"
 
 DEFAULT_TARGET_DOMAIN = os.environ.get("DEFAULT_TARGET_DOMAIN", "feetfinder.com")
+DEFAULT_YANDEX_VERIFICATION = "132993a7deb9e806"
 PUBLIC_BASE_URL = os.environ.get("APP_PUBLIC_BASE_URL", "").rstrip("/")
 APP_USERNAME = os.environ.get("APP_USERNAME", "")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")

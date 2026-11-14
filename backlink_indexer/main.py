@@ -72,7 +72,7 @@ from .projects import (
     type_counts,
 )
 from .queue import check_ids, mark_engines, requeue, resubmit_failed, run_queue
-from .services import google_indexing, indexnow, websub
+from .services import bing_webmaster, google_indexing, indexnow, websub
 from .services.secrets import setting_or_env
 from .services.urlutil import host_of, registrable_host
 from .ui import current_user, login_redirect, render, templates
@@ -104,8 +104,10 @@ async def startup() -> None:
     try:
         init_db()
         from .auth import promote_operator_accounts
+        from .projects import backfill_crawl_hub
 
         promote_operator_accounts()
+        backfill_crawl_hub()
     except Exception:
         pass
     try:
@@ -265,6 +267,28 @@ def engine_choices(saved: Optional[dict] = None) -> list[dict]:
             checked = str(saved.get(key, 1)) not in {"0", "False", "false", ""}
         rows.append({"key": key, "label": label, "configured": configured[key], "checked": checked})
     return rows
+
+
+async def _bing_sites() -> list[str]:
+    fixed, _fixed_source = setting_or_env("bing_site_url", "BING_WEBMASTER_SITE_URL")
+    if (fixed or "").strip():
+        return [fixed.strip()]
+    key, _key_source = setting_or_env("bing_webmaster_api_key", "BING_WEBMASTER_API_KEY")
+    if not key:
+        return []
+    cached = bing_webmaster.cached_sites()
+    if cached is not None:
+        return cached
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            return await bing_webmaster.get_user_sites(client, key)
+    except Exception:
+        return []
+
+
+def _clean_link_type(value: str) -> str:
+    picked = (value or "auto").strip().lower()
+    return picked if picked in {"auto", "internal", "external"} else "auto"
 
 
 def posted_engines(
@@ -583,7 +607,8 @@ async def create_project_route(
     if sitemap_url.strip():
         locs, sitemap_note = await _fetch_sitemap(sitemap_url.strip())
         lines.extend(locs)
-    result = add_urls(user, project, lines, "Initial batch") if lines else {"added": 0, "duplicates": 0, "skipped": 0, "not_charged": 0, "limit_message": ""}
+    sites = await _bing_sites() if lines else []
+    result = add_urls(user, project, lines, "Initial batch", bing_sites=sites) if lines else {"added": 0, "duplicates": 0, "skipped": 0, "not_charged": 0, "limit_message": ""}
     message = f"Project created. Added {result['added']} link(s)."
     if result.get("duplicates"):
         message += f" {result['duplicates']} duplicate(s) ignored."
@@ -772,6 +797,7 @@ async def add_project_urls(
     use_bing: str = Form(""),
     use_yandex: str = Form(""),
     use_indexnow: str = Form(""),
+    link_type: str = Form("auto"),
 ):
     user, redirect = _need(request)
     if redirect:
@@ -787,7 +813,9 @@ async def add_project_urls(
     if sitemap_url.strip():
         locs, sitemap_note = await _fetch_sitemap(sitemap_url.strip())
         lines.extend(locs)
-    result = add_urls(user, project, lines, "Added from project")
+    kind = _clean_link_type(link_type)
+    sites = await _bing_sites() if kind == "auto" else []
+    result = add_urls(user, project, lines, "Added from project", link_type=kind, bing_sites=sites)
     message = f"Added {result['added']} link(s)."
     if result.get("duplicates"):
         message += f" {result['duplicates']} duplicate(s)."
@@ -1236,7 +1264,9 @@ async def v1_create(request: Request):
     lines = payload.get("urls") or []
     if isinstance(lines, str):
         lines = lines.splitlines()
-    result = add_urls(user, project, [str(item) for item in lines], "API batch") if lines else {"added": 0}
+    kind = _clean_link_type(str(payload.get("link_type") or "auto"))
+    sites = await _bing_sites() if lines and kind == "auto" else []
+    result = add_urls(user, project, [str(item) for item in lines], "API batch", link_type=kind, bing_sites=sites) if lines else {"added": 0}
     return {"project": get_project(project["id"], user["id"]), "ingest": result}
 
 
@@ -1283,7 +1313,9 @@ async def v1_urls(project_id: int, request: Request):
     lines = payload.get("urls") or []
     if isinstance(lines, str):
         lines = lines.splitlines()
-    return add_urls(user, project, [str(item) for item in lines], "API batch")
+    kind = _clean_link_type(str(payload.get("link_type") or "auto"))
+    sites = await _bing_sites() if kind == "auto" else []
+    return add_urls(user, project, [str(item) for item in lines], "API batch", link_type=kind, bing_sites=sites)
 
 
 @app.api_route("/api/cron/tick", methods=["GET", "POST"])
@@ -1304,7 +1336,7 @@ async def robots_txt(request: Request):
     base = crawl_base(str(request.base_url))
     body = (
         "User-agent: *\nAllow: /hub\nAllow: /hub/\nAllow: /sitemap.xml\nAllow: /sitemaps/\nAllow: /robots.txt\n"
-        "Disallow: /api/\nDisallow: /app\nDisallow: /static/\n"
+        "Allow: /static/\nDisallow: /api/\nDisallow: /app\n"
         f"Sitemap: {base}/sitemap.xml\n"
     )
     return PlainTextResponse(body)

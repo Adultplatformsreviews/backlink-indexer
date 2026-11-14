@@ -151,3 +151,95 @@ def test_yandex_quota_remainder_is_read():
     result = asyncio.run(run())
     assert result["ok"] is True
     assert result["remainder"] == 0
+
+
+def test_bing_match_www_and_longest_path_prefix():
+    sites = [
+        "https://www.example.com/",
+        "https://user.github.io/repo/",
+        "https://user.github.io/repo/docs/",
+        "https://other.github.io/repo/",
+    ]
+    assert bing_webmaster.match_site("https://example.com/page", sites) == "https://www.example.com/"
+    assert bing_webmaster.match_site("https://user.github.io/repo/page", sites) == "https://user.github.io/repo/"
+    assert bing_webmaster.match_site("https://user.github.io/repo/docs/a", sites) == "https://user.github.io/repo/docs/"
+    assert bing_webmaster.match_site("https://user.github.io/other", sites) is None
+
+
+def test_bing_plan_groups_by_site_and_skips_unverified():
+    set_setting("bing_sites_json", "")
+    set_setting("bing_sites_at", "")
+    set_setting("bing_quota_json", "")
+    set_setting("bing_quota_date", "2000-01-01")
+    set_setting("bing_quota_count", "0")
+    posts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("GetUrlSubmissionQuota"):
+            site = request.url.params.get("siteUrl", "")
+            quota = 1 if "feetfinder.com" in site else 10
+            return httpx.Response(200, json={"d": {"DailyQuota": quota}})
+        import json
+        posts.append(json.loads(request.content.decode()))
+        return httpx.Response(200, text="")
+
+    sites = ["https://feetfinder.com/", "https://user.github.io/repo/"]
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            return await bing_webmaster.plan_submissions(
+                http,
+                "bing-key",
+                [
+                    "https://feetfinder.com/a",
+                    "https://www.feetfinder.com/b",
+                    "https://user.github.io/repo/page",
+                    "https://not-verified.example/z",
+                ],
+                sites,
+            )
+
+    result = asyncio.run(run())
+    assert result["https://not-verified.example/z"]["state"] == "not_verified"
+    assert result["https://feetfinder.com/a"]["state"] == "accepted"
+    assert "feetfinder.com" in result["https://feetfinder.com/a"]["detail"]
+    assert result["https://www.feetfinder.com/b"]["state"] == "deferred"
+    assert result["https://user.github.io/repo/page"]["state"] == "accepted"
+    assert len(posts) == 2
+    assert {item["siteUrl"] for item in posts} == {"https://feetfinder.com/", "https://user.github.io/repo/"}
+
+
+def test_get_user_sites_keeps_verified_and_caches():
+    set_setting("bing_sites_json", "")
+    set_setting("bing_sites_at", "")
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            200,
+            json={
+                "d": [
+                    {"SiteUrl": "https://feetfinder.com/", "IsVerified": True},
+                    {"SiteUrl": "https://secret.example/", "IsVerified": False},
+                ]
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            first = await bing_webmaster.get_user_sites(http, "bing-key")
+            second = await bing_webmaster.get_user_sites(http, "bing-key")
+            return first, second
+
+    first, second = asyncio.run(run())
+    assert calls["n"] == 1
+    assert first == ["https://feetfinder.com/"]
+    assert second == first
+
+
+def test_not_verified_does_not_replace_an_indexnow_acceptance():
+    from backlink_indexer.queue import _prefer
+
+    assert _prefer("accepted", "not_verified") == "accepted"
+    assert _prefer("off", "not_verified") == "not_verified"

@@ -317,8 +317,7 @@ async def _submit_owned(
             engines["yandex"] = "not_configured"
 
     bing_key, _bing_source = setting_or_env("bing_webmaster_api_key", "BING_WEBMASTER_API_KEY")
-    bing_site = (setting_or_env("bing_site_url", "BING_WEBMASTER_SITE_URL")[0] or "").strip() or f"https://{host}/"
-    site_host = registrable_host(host_of(bing_site))
+    planned = getattr(client, "bing_by_url", None)
     if not selected.get("bing", True):
         if engines["bing"] == "off":
             detail = "Bing Webmaster is turned off for this project."
@@ -331,24 +330,42 @@ async def _submit_owned(
         attempts.append({"method": "bing", "status": "not_configured", "detail": detail})
         if engines["bing"] == "off":
             engines["bing"] = "not_configured"
-    elif not owned_host:
-        detail = "Bing Webmaster was not called because this host is not marked as owned."
+    elif isinstance(planned, dict) and url in planned:
+        bing_result = planned[url]
+        detail = bing_result.get("detail") or "Bing Webmaster returned no detail."
         notes.append(detail)
-        attempts.append({"method": "bing", "status": "not_configured", "detail": detail})
-    elif bing_key and (not site_host or site_host == registrable_host(host)):
-        bing_result = await bing_webmaster.submit_url(client, bing_key, bing_site, url)
-        notes.append(bing_result.get("detail") or "Bing Webmaster returned no detail.")
-        attempts.append({
-            "method": "bing",
-            "status": str(bing_result.get("state") or "unknown"),
-            "detail": f"Bing Webmaster: {bing_result.get('detail') or 'no response body'}"[:500],
-        })
-        if bing_result.get("state") == "deferred":
+        state = str(bing_result.get("state") or "unknown")
+        attempts.append({"method": "bing", "status": state, "detail": f"Bing Webmaster: {detail}"[:500]})
+        if state == "deferred":
             deferred = True
-        elif bing_result.get("state") in {"accepted", "rejected"}:
-            engines["bing"] = _prefer(engines["bing"], bing_result["state"])
-    elif bing_key:
-        notes.append("Bing Webmaster key is set, but this URL is not on the verified Bing site URL.")
+        elif state in {"accepted", "rejected", "not_verified", "not_configured"}:
+            engines["bing"] = _prefer(engines["bing"], state)
+    elif isinstance(planned, dict):
+        detail = "Not verified in Bing. IndexNow and the crawl hub still apply."
+        notes.append(detail)
+        attempts.append({"method": "bing", "status": "not_verified", "detail": detail})
+        engines["bing"] = _prefer(engines["bing"], "not_verified")
+    else:
+        bing_site = (setting_or_env("bing_site_url", "BING_WEBMASTER_SITE_URL")[0] or "").strip() or f"https://{host}/"
+        site_host = registrable_host(host_of(bing_site))
+        if not owned_host:
+            detail = "Bing Webmaster was not called because this host is not marked as owned."
+            notes.append(detail)
+            attempts.append({"method": "bing", "status": "not_configured", "detail": detail})
+        elif not site_host or site_host == registrable_host(host):
+            bing_result = await bing_webmaster.submit_url(client, bing_key, bing_site, url)
+            notes.append(bing_result.get("detail") or "Bing Webmaster returned no detail.")
+            attempts.append({
+                "method": "bing",
+                "status": str(bing_result.get("state") or "unknown"),
+                "detail": f"Bing Webmaster: {bing_result.get('detail') or 'no response body'}"[:500],
+            })
+            if bing_result.get("state") == "deferred":
+                deferred = True
+            elif bing_result.get("state") in {"accepted", "rejected"}:
+                engines["bing"] = _prefer(engines["bing"], bing_result["state"])
+        else:
+            notes.append("Bing Webmaster key is set, but this URL is not on the verified Bing site URL.")
 
     token, _token_source = setting_or_env("yandex_webmaster_token", "YANDEX_WEBMASTER_TOKEN")
     user_id, _user_source = setting_or_env("yandex_webmaster_user_id", "YANDEX_WEBMASTER_USER_ID")
@@ -500,45 +517,71 @@ async def _process_row(
         submission = "checked" if engines["google"] in {"indexed", "not_indexed"} else "check_pending"
         precheck["google_detail"] = note[:300]
     else:
-        base = _public_base()
-        key, _source = setting_or_env("indexnow_key", "INDEXNOW_KEY")
-        engines, owned_note, extra = await _submit_owned(
-            client, row["url"], owned, base, key, selected_engines(project)
-        )
-        for attempt in extra.get("attempts") or []:
-            _record_submission(
-                row["id"],
-                str(attempt.get("method") or "submission"),
-                str(attempt.get("status") or "unknown"),
-                str(attempt.get("detail") or ""),
+        sites = getattr(client, "bing_sites", None) or []
+        link_type = (row.get("link_type") or "").strip().lower()
+        if link_type not in {"internal", "external"}:
+            link_type = (
+                "internal"
+                if bing_webmaster.match_site(row["url"], sites) or _is_owned(row["url"], owned)
+                else "external"
             )
-        precheck["google_detail"] = extra.get("google_detail") or ""
-        precheck["indexnow_detail"] = extra.get("indexnow_detail") or ""
-        if extra.get("deferred"):
-            note = owned_note
-            _save_url(
-                row["id"], project["id"], precheck=precheck, queue_status="queued",
-                note=note, engines=engines, submission_status="quota_hold",
-                index_source="", count_toward_speed=False,
+        if link_type == "external":
+            engines = {"google": "external_hub", "yandex": "external_hub", "bing": "external_hub"}
+            note = (
+                "External – via crawl hub. Owner-only APIs were not called. "
+                "The hub page is sent with an IndexNow ping and a Bing sitemap ping."
             )
+            submission = "submitted_hub"
+            for method in ("google", "bing", "yandex", "indexnow"):
+                _record_submission(row["id"], method, "external_hub", note)
             with tx() as conn:
                 conn.execute(
-                    "UPDATE urls SET hold_until=?, updated_at=? WHERE id=?",
-                    (_tomorrow(), utcnow(), row["id"]),
+                    "UPDATE urls SET in_hub=1, link_type='external', updated_at=? WHERE id=?",
+                    (utcnow(), row["id"]),
                 )
-            return "deferred"
-        if _is_owned(row["url"], owned):
-            note = owned_note or "Owned host: no IndexNow key or Google service account is configured. Listed on the discovery hub only."
-        elif project_type == "instant":
-            note = (
-                "Listed on your discovery hub. IndexNow and the Google Indexing API "
-                "were not used because this host is not in Owned hosts."
-            )
         else:
-            note = "Listed on your discovery hub so crawlers can discover it. This is not an index confirmation."
-        submission = "submitted_hub"
-        with tx() as conn:
-            conn.execute("UPDATE urls SET in_hub=1, updated_at=? WHERE id=?", (utcnow(), row["id"]))
+            base = _public_base()
+            key, _source = setting_or_env("indexnow_key", "INDEXNOW_KEY")
+            engines, owned_note, extra = await _submit_owned(
+                client, row["url"], owned, base, key, selected_engines(project)
+            )
+            for attempt in extra.get("attempts") or []:
+                _record_submission(
+                    row["id"],
+                    str(attempt.get("method") or "submission"),
+                    str(attempt.get("status") or "unknown"),
+                    str(attempt.get("detail") or ""),
+                )
+            precheck["google_detail"] = extra.get("google_detail") or ""
+            precheck["indexnow_detail"] = extra.get("indexnow_detail") or ""
+            if extra.get("deferred"):
+                note = owned_note
+                _save_url(
+                    row["id"], project["id"], precheck=precheck, queue_status="queued",
+                    note=note, engines=engines, submission_status="quota_hold",
+                    index_source="", count_toward_speed=False,
+                )
+                with tx() as conn:
+                    conn.execute(
+                        "UPDATE urls SET hold_until=?, link_type='internal', updated_at=? WHERE id=?",
+                        (_tomorrow(), utcnow(), row["id"]),
+                    )
+                return "deferred"
+            if _is_owned(row["url"], owned) or bing_webmaster.match_site(row["url"], sites):
+                note = owned_note or "Owned host: no IndexNow key or Google service account is configured. Listed on the discovery hub only."
+            elif project_type == "instant":
+                note = (
+                    "Listed on your discovery hub. IndexNow and the Google Indexing API "
+                    "were not used because this host is not in Owned hosts."
+                )
+            else:
+                note = "Listed on your discovery hub so crawlers can discover it. This is not an index confirmation."
+            submission = "submitted_hub"
+            with tx() as conn:
+                conn.execute(
+                    "UPDATE urls SET in_hub=1, link_type='internal', updated_at=? WHERE id=?",
+                    (utcnow(), row["id"]),
+                )
 
     _save_url(
         row["id"],
@@ -649,6 +692,58 @@ async def run_queue(
             if not rows:
                 continue
             summary["projects"] += 1
+            selected = selected_engines(project)
+            bing_key, _bing_source = setting_or_env("bing_webmaster_api_key", "BING_WEBMASTER_API_KEY")
+            fixed_site = (setting_or_env("bing_site_url", "BING_WEBMASTER_SITE_URL")[0] or "").strip()
+            sites: list[str] | None = []
+            site_error = ""
+            if bing_key and fixed_site:
+                sites = [fixed_site]
+            elif bing_key:
+                try:
+                    sites = await bing_webmaster.get_user_sites(client, bing_key)
+                except Exception as exc:
+                    sites = None
+                    site_error = str(exc)
+            client.bing_sites = sites or []
+            client.bing_by_url = None
+            if bing_key and selected.get("bing", True):
+                internal_urls = []
+                for row in rows:
+                    kind = (row.get("link_type") or "").strip().lower()
+                    if kind not in {"internal", "external"}:
+                        kind = (
+                            "internal"
+                            if bing_webmaster.match_site(row["url"], sites or []) or _is_owned(row["url"], owned)
+                            else "external"
+                        )
+                    if kind == "internal":
+                        internal_urls.append(row["url"])
+                if internal_urls and sites is None:
+                    client.bing_by_url = {
+                        url: {
+                            "ok": False,
+                            "state": "not_configured",
+                            "site": "",
+                            "detail": f"Bing GetUserSites failed: {site_error}",
+                        }
+                        for url in internal_urls
+                    }
+                elif internal_urls:
+                    try:
+                        client.bing_by_url = await bing_webmaster.plan_submissions(
+                            client, bing_key, internal_urls, sites or []
+                        )
+                    except Exception as exc:
+                        client.bing_by_url = {
+                            url: {
+                                "ok": False,
+                                "state": "not_configured",
+                                "site": "",
+                                "detail": f"Bing Webmaster batch failed: {exc}",
+                            }
+                            for url in internal_urls
+                        }
             for row in rows:
                 if time.monotonic() >= deadline:
                     summary["stopped_for_time"] = True

@@ -147,6 +147,38 @@ def unique_slug(name: str, project_id: Optional[int] = None) -> str:
         number += 1
 
 
+def backfill_crawl_hub() -> int:
+    """Give every pre-existing project a slug and turn the crawl hub on.
+
+    A project that already has a slug and publish_hub 0 was switched off on
+    purpose and is left alone. An empty slug means the hub feature never ran
+    for that row, so it is published by default.
+    """
+    rows = get_conn().execute(
+        "SELECT id, name, slug, publish_hub FROM projects ORDER BY id"
+    ).fetchall()
+    changed = 0
+    for row in rows:
+        slug = (row["slug"] or "").strip()
+        publish = row["publish_hub"]
+        new_slug = slug
+        new_publish = publish
+        if not slug:
+            new_slug = unique_slug(row["name"] or "project", int(row["id"]))
+            new_publish = 1
+        elif publish is None:
+            new_publish = 1
+        else:
+            continue
+        with tx() as conn:
+            conn.execute(
+                "UPDATE projects SET slug = ?, publish_hub = ? WHERE id = ?",
+                (new_slug, int(new_publish or 0), row["id"]),
+            )
+        changed += 1
+    return changed
+
+
 def ensure_slug(project: dict) -> dict:
     if project.get("slug"):
         return project
@@ -306,6 +338,8 @@ def list_urls(
         "indexed": "(google_state = 'indexed' OR yandex_state = 'indexed' OR bing_state = 'indexed')",
         "unknown": "google_state = 'unknown' AND yandex_state = 'unknown' AND bing_state = 'unknown'",
         "dead": "is_live = 0",
+        "internal": "link_type = 'internal'",
+        "external": "link_type = 'external'",
     }
     if filt in filters:
         where.append(filters[filt])

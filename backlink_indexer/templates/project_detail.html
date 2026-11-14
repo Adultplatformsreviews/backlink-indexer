@@ -43,24 +43,75 @@
   {% include "engines.html" %}
   <button class="btn" type="submit">Save engines</button>
 </form>
-<form class="card import-card" method="post" action="/app/projects/{{ project.id }}/urls" enctype="multipart/form-data">
-  <h2>Add links</h2>
-  <p class="sub">{% if user.unlimited %}Unlimited. No daily URL cap, token charge, or per-project pace. Engine quotas still apply.{% else %}{{ usage.label }}. New URLs count toward the daily limit.{% endif %} Duplicates already in this project are skipped.</p>
-  <label class="field">Paste URLs, one per line
-    <textarea name="urls" rows="4" placeholder="https://example.com/page"></textarea>
-  </label>
-  <div class="split">
-    <label class="field">CSV or TXT upload <input type="file" name="upload" accept=".csv,.txt,.tsv,.xml,text/csv,text/plain"></label>
-    <label class="field">Sitemap URL <input name="sitemap_url" type="url" placeholder="https://example.com/sitemap.xml"></label>
+<form class="card import-card add-links" method="post" action="/app/projects/{{ project.id }}/urls" enctype="multipart/form-data">
+  <div class="add-layout">
+    <div>
+      <h2>Add links</h2>
+      <p class="sub">Duplicates already in this project are skipped.</p>
+      <fieldset class="link-type">
+        <legend>Link type</legend>
+        <label><input type="radio" name="link_type" value="auto" data-label="Auto-detect" checked> <span><strong>Auto-detect</strong><br><span class="sub">Internal when the host is a verified Bing site or an owned domain. Otherwise external.</span></span></label>
+        <label><input type="radio" name="link_type" value="internal" data-label="Internal"> <span><strong>Internal links (my own verified sites)</strong><br><span class="sub">Submit with Google Indexing API, Bing Webmaster, Yandex Webmaster, and IndexNow.</span></span></label>
+        <label><input type="radio" name="link_type" value="external" data-label="External"> <span><strong>External links (any website)</strong><br><span class="sub">Publish on the crawl hub, ping that hub page with IndexNow, and ping the Bing sitemap. Owner-only APIs are not called.</span></span></label>
+      </fieldset>
+      <div class="field">
+        <span class="engine-name">Where to send</span>
+        <div class="engine-picker" data-engine-group>
+          <input type="hidden" name="engines_set" value="1">
+          <label class="engine-row engine-all">
+            <input type="checkbox" data-engine-all {% if engines and engines|selectattr('checked')|list|length == engines|length %}checked{% endif %}>
+            <span class="engine-name">Select all engines</span>
+          </label>
+          <div class="send-cards">
+            {% for engine in engines %}
+            {% set short = {'use_google':'Google','use_yandex':'Yandex','use_bing':'Bing','use_indexnow':'IndexNow'} %}
+            <label class="engine-card">
+              <input type="checkbox" name="{{ engine.key }}" value="1" data-engine data-label="{{ short.get(engine.key, engine.label) }}" {% if engine.checked %}checked{% endif %}>
+              <span class="logo logo-{{ engine.key }}" aria-hidden="true"></span>
+              <span>
+                <strong>{{ short.get(engine.key, engine.label) }}</strong>
+                {% if not engine.configured %}<span class="badge">Not configured</span>{% endif %}
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <div class="source-tabs" role="tablist">
+        <button class="btn on" type="button" data-source="list">List</button>
+        <button class="btn" type="button" data-source="file">.txt file</button>
+        <button class="btn" type="button" data-source="sitemap">Sitemap</button>
+      </div>
+      <div data-source-panel="list">
+        <label class="field">One link per line
+          <textarea name="urls" rows="6" placeholder="https://example.com/page"></textarea>
+        </label>
+      </div>
+      <div data-source-panel="file" hidden>
+        <label class="field">.txt file
+          <input type="file" name="upload" accept=".csv,.txt,.tsv,.xml,text/csv,text/plain">
+        </label>
+      </div>
+      <div data-source-panel="sitemap" hidden>
+        <label class="field">Sitemap URL
+          <input name="sitemap_url" type="url" placeholder="https://example.com/sitemap.xml">
+        </label>
+      </div>
+      <input type="hidden" name="autoprocess" value="1">
+      <button class="btn red" type="submit">Add links</button>
+    </div>
+    <aside class="summary-panel">
+      <h2>Summary</h2>
+      <p>Engines <strong id="summaryEngines">None</strong></p>
+      <p>Links <strong id="summaryCount">0</strong></p>
+      <p>Link type <strong id="summaryType">Auto-detect</strong></p>
+      <p>Project speed <strong>{% if user.unlimited %}Unlimited{% else %}{{ project.daily_speed }} / day{% endif %}</strong></p>
+      <p>Daily remaining <strong>{% if user.unlimited %}Unlimited{% elif usage %}{{ usage.remaining }}{% else %}—{% endif %}</strong></p>
+    </aside>
   </div>
-  <div class="field">Engines for this import
-    {% include "engines.html" %}
-  </div>
-  <input type="hidden" name="autoprocess" value="1">
-  <button class="btn red" type="submit">Import into this project</button>
 </form>
 <form method="get" class="tabs">
-  {% for key, label in [('all','All'),('queued','Queued'),('sent','Sent'),('indexed','Indexed'),('unknown','Unknown'),('dead','Not live'),('failed','Failed'),('rejected','Rejected')] %}
+  {% for key, label in [('all','All'),('queued','Queued'),('sent','Sent'),('indexed','Indexed'),('unknown','Unknown'),('dead','Not live'),('failed','Failed'),('rejected','Rejected'),('internal','Internal'),('external','External')] %}
   <a class="tab {{ 'on' if filter == key else '' }}" href="/app/projects/{{ project.id }}?filter={{ key }}&per={{ listing.per }}&q={{ q }}">{{ label }}</a>
   {% endfor %}
   <span class="search"><input name="q" value="{{ q }}" placeholder="Filter by URL" aria-label="Filter by URL"><input type="hidden" name="filter" value="{{ filter }}"><input type="hidden" name="per" value="{{ 'all' if listing.per == 0 else listing.per }}"><button class="btn" type="submit">Search</button></span>
@@ -72,6 +123,7 @@
         <tr>
           <th><input type="checkbox" id="checkAll" aria-label="Select all"></th>
           <th>URL</th>
+          <th>Link type</th>
           <th>Queue</th>
           <th>Google</th>
           <th>Yandex</th>
@@ -90,6 +142,7 @@
           <td class="url"><a href="{{ row.url }}" target="_blank" rel="noopener">{{ row.url }}</a>
             {% if row.queue_note %}<div class="sub">{{ row.queue_note }}</div>{% endif %}
           </td>
+          <td>{% if row.link_type == 'internal' %}<span class="badge type-internal">Internal</span>{% elif row.link_type == 'external' %}<span class="badge type-external">External</span>{% else %}—{% endif %}</td>
           <td>{{ state_label(row.queue_status) }}</td>
           <td>{{ state_label(row.google_state) }}</td>
           <td>{{ state_label(row.yandex_state) }}</td>
@@ -101,7 +154,7 @@
           <td><button class="btn history-btn" type="button" data-history="/app/projects/{{ project.id }}/urls/{{ row.id }}/history">History</button></td>
         </tr>
         {% else %}
-        <tr><td colspan="11" class="empty">No links in this filter.</td></tr>
+        <tr><td colspan="12" class="empty">No links in this filter.</td></tr>
         {% endfor %}
       </tbody>
     </table>

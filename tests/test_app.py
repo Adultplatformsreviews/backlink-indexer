@@ -133,7 +133,7 @@ def test_signup_project_tokens_and_daily_speed(client, monkeypatch):
     close_conn()
     assert sum(row["queue_status"] == "sent" for row in rows) == 2
     assert sum(row["queue_status"] == "queued" for row in rows) == 3
-    assert all(row["google_state"] == "not_configured" for row in rows if row["queue_status"] == "sent")
+    assert all(row["google_state"] == "external_hub" for row in rows if row["queue_status"] == "sent")
     second = client.post(project_path + "/process", follow_redirects=True)
     assert "Nothing was due" in second.text
 
@@ -600,7 +600,7 @@ def test_engine_selector_and_batch_process(client, monkeypatch):
     close_conn()
     sent = [row for row in rows if row["http_status"] == 200]
     assert sent
-    assert all(row["google_state"] == "off" for row in sent)
+    assert all(row["google_state"] == "external_hub" for row in sent)
 
 
 def test_crawl_hub_pages_sitemap_and_help(client, monkeypatch):
@@ -641,6 +641,8 @@ def test_crawl_hub_pages_sitemap_and_help(client, monkeypatch):
     robots = client.get("/robots.txt")
     assert "Sitemap:" in robots.text
     assert "/sitemap.xml" in robots.text
+    assert "Allow: /static/" in robots.text
+    assert "Disallow: /static/" not in robots.text
     detail = client.get(path)
     assert "Crawl hub" in detail.text
     assert "Search Console" in detail.text
@@ -662,3 +664,119 @@ def test_csv_export(client):
     assert csv_resp.status_code == 200
     assert "https://example.com/e" in csv_resp.text
     assert "unknown" in csv_resp.text
+
+
+def test_backfill_publishes_projects_that_never_got_a_slug(client):
+    signup(client, "slugger", "password1")
+    created = client.post(
+        "/app/projects",
+        data={
+            "name": "Zeeshan Haider",
+            "project_type": "indexing",
+            "daily_speed": "5",
+            "urls": "https://example.com/old",
+        },
+        follow_redirects=False,
+    )
+    project_id = int(created.headers["location"].split("?")[0].rstrip("/").split("/")[-1])
+    with tx() as conn:
+        conn.execute("UPDATE projects SET slug='', publish_hub=0 WHERE id=?", (project_id,))
+    close_conn()
+    sitemap = client.get("/sitemap.xml")
+    assert "/sitemaps/zeeshan-haider.xml" in sitemap.text
+    assert "/sitemaps/zeeshan-haider-links.xml" in sitemap.text
+    hub = client.get("/hub/zeeshan-haider")
+    assert hub.status_code == 200
+    assert "https://example.com/old" in hub.text
+    kept = client.post(
+        "/app/projects",
+        data={"name": "Stay Off", "project_type": "indexing", "daily_speed": "5", "urls": "https://example.com/off"},
+        follow_redirects=False,
+    )
+    kept_id = int(kept.headers["location"].split("?")[0].rstrip("/").split("/")[-1])
+    with tx() as conn:
+        conn.execute("UPDATE projects SET publish_hub=0 WHERE id=?", (kept_id,))
+    close_conn()
+    again = client.get("/sitemap.xml")
+    assert "stay-off" not in again.text
+    assert client.get("/hub/stay-off").status_code == 404
+
+
+def test_link_type_column_filter_and_external_skip(client, monkeypatch):
+    signup(client, "linker", "password1")
+    with tx() as conn:
+        conn.execute(
+            "INSERT INTO owned_hosts (host, notes, created_at) VALUES ('owned.example', '', ?)",
+            (utcnow(),),
+        )
+    close_conn()
+    created = client.post(
+        "/app/projects",
+        data={
+            "name": "Types",
+            "project_type": "indexing",
+            "daily_speed": "10",
+            "urls": "https://owned.example/mine",
+        },
+        follow_redirects=False,
+    )
+    path = created.headers["location"].split("?")[0]
+    page = client.get(path)
+    assert "Link type" in page.text
+    assert "Where to send" in page.text
+    assert "Add links" in page.text
+    assert "summaryCount" in page.text
+    assert "type-internal" in page.text
+    added = client.post(
+        path + "/urls",
+        data={
+            "link_type": "external",
+            "urls": "https://other.example/out",
+        },
+        follow_redirects=False,
+    )
+    assert added.status_code == 303
+    external = client.get(path + "?filter=external")
+    assert "other.example/out" in external.text
+    assert "owned.example/mine" not in external.text
+    internal = client.get(path + "?filter=internal")
+    assert "owned.example/mine" in internal.text
+    auto = client.post(
+        path + "/urls",
+        data={"link_type": "auto", "urls": "https://owned.example/auto\nhttps://stranger.example/x"},
+        follow_redirects=False,
+    )
+    assert auto.status_code == 303
+    stored = get_conn().execute("SELECT url, link_type FROM urls ORDER BY id").fetchall()
+    kinds = {row["url"]: row["link_type"] for row in stored}
+    assert kinds["https://owned.example/mine"] == "internal"
+    assert kinds["https://other.example/out"] == "external"
+    assert kinds["https://owned.example/auto"] == "internal"
+    assert kinds["https://stranger.example/x"] == "external"
+    close_conn()
+
+    calls = {"bing": 0}
+
+    async def fake_precheck(http, url, target, include, cache):
+        return {
+            "final_url": url, "http_status": 200, "is_live": True, "fetch_error": None,
+            "content_type": "text/html", "meta_robots": "", "x_robots_tag": "", "noindex": False,
+            "robots_disallow": False, "canonical": url, "canonicalized_away": False,
+            "has_link": False, "link_rel": "none", "link_count": 0, "link_details_json": "[]",
+        }
+
+    async def fake_bing(*args, **kwargs):
+        calls["bing"] += 1
+        return {"ok": True, "state": "accepted", "detail": "should not run"}
+
+    monkeypatch.setattr("backlink_indexer.queue.precheck_url", fake_precheck)
+    monkeypatch.setattr("backlink_indexer.queue.bing_webmaster.submit_url", fake_bing)
+    monkeypatch.setattr("backlink_indexer.queue.bing_webmaster.plan_submissions", fake_bing)
+    client.post(path + "/process", follow_redirects=True)
+    rows = get_conn().execute("SELECT url, google_state, bing_state FROM urls").fetchall()
+    close_conn()
+    by_url = {row["url"]: row for row in rows}
+    assert by_url["https://other.example/out"]["google_state"] == "external_hub"
+    assert by_url["https://other.example/out"]["bing_state"] == "external_hub"
+    assert by_url["https://owned.example/mine"]["google_state"] == "not_configured"
+    assert calls["bing"] == 0

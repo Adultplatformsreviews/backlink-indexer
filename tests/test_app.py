@@ -10,6 +10,8 @@ from backlink_indexer.main import app
 
 @pytest.fixture
 def client():
+    if (resolve_database_url()[0] or "").startswith("postgres"):
+        raise RuntimeError("Refusing to wipe a Postgres database from the test suite.")
     with TestClient(app) as test_client:
         conn = get_conn()
         for table in (
@@ -700,6 +702,34 @@ def test_backfill_publishes_projects_that_never_got_a_slug(client):
     again = client.get("/sitemap.xml")
     assert "stay-off" not in again.text
     assert client.get("/hub/stay-off").status_code == 404
+
+
+def test_hub_request_backfills_without_opening_the_sitemap(client):
+    signup(client, "directhub", "password1")
+    created = client.post(
+        "/app/projects",
+        data={
+            "name": "Zeeshan Haider",
+            "project_type": "indexing",
+            "daily_speed": "5",
+            "urls": "https://example.com/direct",
+        },
+        follow_redirects=False,
+    )
+    project_id = int(created.headers["location"].split("?")[0].rstrip("/").split("/")[-1])
+    with tx() as conn:
+        conn.execute("UPDATE projects SET slug='', publish_hub=0 WHERE id=?", (project_id,))
+    close_conn()
+    hub = client.get("/hub/zeeshan-haider")
+    assert hub.status_code == 200
+    assert "https://example.com/direct" in hub.text
+    again = client.get("/hub/zeeshan-haider")
+    assert again.status_code == 200
+    sitemap = client.get("/sitemap.xml")
+    assert "/sitemaps/zeeshan-haider.xml" in sitemap.text
+    pages = client.get("/sitemaps/zeeshan-haider.xml")
+    assert pages.status_code == 200
+    assert "/hub/zeeshan-haider" in pages.text
 
 
 def test_link_type_column_filter_and_external_skip(client, monkeypatch):

@@ -193,13 +193,36 @@ def get_conn() -> DB:
 
 
 def close_conn() -> None:
+    """Return the request connection to the pool.
+
+    Neon’s pooled connections drop an open transaction on close. A backfill
+    UPDATE that has not been committed yet would vanish, so a clean Postgres
+    transaction is committed first. A failed transaction is rolled back.
+    """
     conn = getattr(_local, "conn", None)
-    if conn is not None:
+    if conn is None:
+        return
+    try:
+        if conn.postgres:
+            from psycopg.pq import TransactionStatus
+
+            status = conn.raw.info.transaction_status
+            if status == TransactionStatus.INERROR:
+                conn.rollback()
+            elif status == TransactionStatus.INTRANS:
+                conn.commit()
+        else:
+            conn.commit()
+    except Exception:
         try:
-            conn.close()
+            conn.rollback()
         except Exception:
             pass
-        _local.conn = None
+    try:
+        conn.close()
+    except Exception:
+        pass
+    _local.conn = None
 
 
 @contextmanager

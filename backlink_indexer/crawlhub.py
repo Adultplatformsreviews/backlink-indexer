@@ -50,13 +50,43 @@ def published_projects() -> list[dict]:
 
 
 def project_by_slug(slug: str) -> Optional[dict]:
-    row = get_conn().execute("SELECT * FROM projects WHERE slug = ?", (slug,)).fetchone()
+    """Resolve a public hub. Backfills missing slugs before the lookup."""
+    wanted = (slug or "").strip().lower()
+    if not wanted:
+        return None
+    backfill_crawl_hub()
+    row = get_conn().execute("SELECT * FROM projects WHERE slug = ?", (wanted,)).fetchone()
+    if not row:
+        row = _publish_named_project(wanted)
     if not row:
         return None
     project = dict(row)
     if not project.get("publish_hub"):
         return None
     return ensure_slug(project)
+
+
+def _publish_named_project(wanted: str):
+    """Publish a project whose name slugifies to this path but has no slug yet."""
+    from .projects import slugify, unique_slug
+
+    for candidate in get_conn().execute("SELECT * FROM projects ORDER BY id").fetchall():
+        project = dict(candidate)
+        existing = (project.get("slug") or "").strip()
+        if existing or slugify(project.get("name") or "") != wanted:
+            continue
+        slug = unique_slug(project.get("name") or "project", project["id"])
+        with tx() as conn:
+            conn.execute(
+                "UPDATE projects SET slug = ?, publish_hub = 1 WHERE id = ? AND (slug IS NULL OR trim(slug) = '')",
+                (slug, project["id"]),
+            )
+        try:
+            get_conn().commit()
+        except Exception:
+            pass
+        return get_conn().execute("SELECT * FROM projects WHERE id = ?", (project["id"],)).fetchone()
+    return None
 
 
 def _count(project_id: int) -> int:

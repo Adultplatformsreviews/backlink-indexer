@@ -3,9 +3,11 @@ from __future__ import annotations
 import csv
 import io
 
-from .database import insert_id, tx, utcnow
+from .config import PUBLIC_BASE_URL
+from .database import get_conn, get_setting, insert_id, tx, utcnow
 from .limits import record_added, reserve_slots
-from .services.urlutil import normalize_submitted
+from .services import bing_webmaster
+from .services.urlutil import host_of, normalize_submitted, registrable_host
 
 
 def parse_upload(text: str, filename: str) -> list[str]:
@@ -62,7 +64,39 @@ def sitemap_locs(xml_text: str) -> list[str]:
     return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml_text or "", flags=re.I)
 
 
-def add_urls(user: dict, project: dict, raw_lines: list[str], batch_name: str) -> dict:
+def _owned_hosts() -> set[str]:
+    rows = get_conn().execute("SELECT host FROM owned_hosts").fetchall()
+    hosts = {registrable_host(row["host"]) for row in rows}
+    base = get_setting("public_base_url") or PUBLIC_BASE_URL
+    if base:
+        hosts.add(registrable_host(host_of(base)))
+    return {host for host in hosts if host}
+
+
+def classify_link(url: str, choice: str, bing_sites: list[str] | None = None) -> str:
+    """Resolve Auto-detect. Internal when the host is owned or verified in Bing."""
+    picked = (choice or "auto").strip().lower()
+    if picked == "internal":
+        return "internal"
+    if picked == "external":
+        return "external"
+    owned = _owned_hosts()
+    host = registrable_host(host_of(url))
+    if any(host == item or host.endswith("." + item) for item in owned):
+        return "internal"
+    if bing_webmaster.match_site(url, bing_sites or []):
+        return "internal"
+    return "external"
+
+
+def add_urls(
+    user: dict,
+    project: dict,
+    raw_lines: list[str],
+    batch_name: str,
+    link_type: str = "auto",
+    bing_sites: list[str] | None = None,
+) -> dict:
     """Add every valid URL. Duplicates are counted and skipped. There is no token charge."""
     urls, skipped, duplicates = normalize_lines(raw_lines)
     if not urls:
@@ -88,14 +122,15 @@ def add_urls(user: dict, project: dict, raw_lines: list[str], batch_name: str) -
         )
         for url in urls:
             try:
+                kind = classify_link(url, link_type, bing_sites)
                 conn.execute(
                     """INSERT INTO urls
-                       (project_id, batch_id, url, in_hub, submission_status, index_status,
+                       (project_id, batch_id, url, in_hub, link_type, submission_status, index_status,
                         google_state, yandex_state, bing_state, queue_status, queue_note,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, 'pending', 'unknown',
+                       VALUES (?, ?, ?, ?, ?, 'pending', 'unknown',
                                'unknown', 'unknown', 'unknown', 'queued', '', ?, ?)""",
-                    (project["id"], batch_id, url, in_hub, now, now),
+                    (project["id"], batch_id, url, in_hub, kind, now, now),
                 )
                 added += 1
             except Exception:

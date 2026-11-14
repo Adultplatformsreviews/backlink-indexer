@@ -557,6 +557,7 @@ _URL_COLUMNS = {
     "queue_status": "TEXT NOT NULL DEFAULT 'queued'",
     "queue_note": "TEXT NOT NULL DEFAULT ''",
     "hold_until": "TEXT NOT NULL DEFAULT ''",
+    "link_type": "TEXT NOT NULL DEFAULT ''",
 }
 
 

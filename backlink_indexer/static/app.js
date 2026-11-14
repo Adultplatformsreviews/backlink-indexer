@@ -114,3 +114,31 @@ if (processForm) {
   });
   if (new URLSearchParams(window.location.search).get("continue") === "1") processUntilDone();
 }
+
+const addForm = document.querySelector(".add-links");
+if (addForm) {
+  const box = addForm.querySelector("textarea[name=urls]");
+  const count = document.getElementById("summaryCount");
+  const typeLabel = document.getElementById("summaryType");
+  const enginesLabel = document.getElementById("summaryEngines");
+  const recount = () => {
+    const lines = (box && box.value ? box.value : "").split(/\n/).map((line) => line.trim()).filter(Boolean);
+    if (count) count.textContent = String(lines.length);
+    const picked = addForm.querySelector("input[name=link_type]:checked");
+    if (typeLabel) typeLabel.textContent = picked ? (picked.dataset.label || "Auto-detect") : "Auto-detect";
+    const names = Array.from(addForm.querySelectorAll("[data-engine]:checked")).map((el) => el.dataset.label || el.name);
+    if (enginesLabel) enginesLabel.textContent = names.length ? names.join(", ") : "None";
+  };
+  if (box) box.addEventListener("input", recount);
+  addForm.querySelectorAll("input").forEach((el) => el.addEventListener("change", recount));
+  addForm.querySelectorAll("[data-source]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const source = button.dataset.source;
+      addForm.querySelectorAll("[data-source]").forEach((item) => item.classList.toggle("on", item === button));
+      addForm.querySelectorAll("[data-source-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.sourcePanel !== source;
+      });
+    });
+  });
+  recount();
+}

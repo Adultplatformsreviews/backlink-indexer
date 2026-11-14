@@ -21,6 +21,8 @@ STATE_LABELS = {
     "unknown": "Unknown",
     "not_configured": "Not configured",
     "off": "Off",
+    "not_verified": "Not verified in Bing",
+    "external_hub": "External – via crawl hub",
     "submitted": "Submitted",
     "accepted": "Accepted",
     "rejected": "Rejected",

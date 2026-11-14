@@ -6,7 +6,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from .database import get_conn, tx, utcnow
-from .projects import ensure_slug
+from .projects import backfill_crawl_hub, ensure_slug
 from .services import indexnow
 from .services.secrets import setting_or_env
 from .services.websub import ping_bing_sitemap
@@ -40,6 +40,7 @@ def hub_page_path(slug: str, page: int) -> str:
 
 
 def published_projects() -> list[dict]:
+    backfill_crawl_hub()
     rows = get_conn().execute(
         """SELECT * FROM projects
            WHERE publish_hub = 1 AND slug != ''

@@ -9,6 +9,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape as xml_escape
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,15 +19,24 @@ from .auth import (
     add_tokens,
     api_key_prefix,
     create_session,
-    create_user,
     delete_session,
     get_user,
-    get_user_by_username,
     revoke_api_key,
     rotate_api_key,
     user_from_api_key,
+)
+from .auth import (
+    create_user,
+    get_user_by_username,
+    hash_password,
+    list_users,
+    set_user_disabled,
+    set_user_password,
     verify_password,
 )
+from .limits import urls_used_today
+from .email_login import consume_reset_token, issue_reset
+from .mailer import describe_mailer
 from .config import DEFAULT_TARGET_DOMAIN, PUBLIC_BASE_URL, SA_PATH
 from .database import (
     bootstrap_db,
@@ -40,7 +50,7 @@ from .database import (
     tx,
     utcnow,
 )
-from .ingest import add_urls, parse_upload
+from .ingest import add_urls, parse_upload, sitemap_locs
 from .projects import (
     PROJECT_TYPES,
     TYPE_LABELS,
@@ -58,6 +68,7 @@ from .projects import (
 )
 from .queue import check_ids, mark_engines, requeue, run_queue
 from .services import google_indexing, indexnow, websub
+from .services.secrets import setting_or_env
 from .services.urlutil import host_of, registrable_host
 from .ui import current_user, login_redirect, render
 
@@ -200,6 +211,22 @@ async def _lines_from_upload(upload: Optional[UploadFile], pasted: str) -> list[
     return lines
 
 
+async def _fetch_sitemap(url: str) -> tuple[list[str], str]:
+    if not url:
+        return [], ""
+    try:
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            response = await client.get(url)
+    except Exception:
+        return [], "Sitemap could not be fetched."
+    if response.status_code != 200:
+        return [], f"Sitemap returned HTTP {response.status_code}."
+    locs = sitemap_locs(response.text)
+    if not locs:
+        return [], "Sitemap had no URLs."
+    return locs, ""
+
+
 def _account_speed(user: dict) -> dict:
     cap = int(user.get("daily_speed_cap") or 0)
     used = allocated_speed(user["id"])
@@ -234,6 +261,11 @@ async def pricing(request: Request):
     return render(request, "pricing.html", active="pricing")
 
 
+def _base(request: Request) -> str:
+    configured = public_base(request)
+    return configured or str(request.base_url).rstrip("/")
+
+
 @app.get("/login")
 async def login_page(request: Request):
     if _user(request):
@@ -242,10 +274,21 @@ async def login_page(request: Request):
 
 
 @app.post("/login")
-async def login_submit(request: Request, username: str = Form(""), password: str = Form(""), next: str = Form("/app")):
+async def login_submit(
+    request: Request,
+    username: str = Form(""),
+    password: str = Form(""),
+    next: str = Form("/app"),
+):
     user = get_user_by_username(username)
-    if not user or not verify_password(password, user["password_hash"]):
-        return render(request, "login.html", status_code=400, error="Username or password is wrong.", next=next)
+    if not user or user.get("disabled") or not verify_password(password, user.get("password_hash") or ""):
+        return render(
+            request,
+            "login.html",
+            status_code=400,
+            error="Username or password is wrong, or this account is disabled.",
+            next=next,
+        )
     token = create_session(user["id"])
     return _session_response(RedirectResponse(_safe_next(next), status_code=303), request, token)
 
@@ -258,12 +301,92 @@ async def signup_page(request: Request):
 
 
 @app.post("/signup")
-async def signup_submit(request: Request, username: str = Form(""), password: str = Form("")):
-    user, error = create_user(username, password)
+async def signup_submit(
+    request: Request,
+    username: str = Form(""),
+    email: str = Form(""),
+    password: str = Form(""),
+):
+    user, error = create_user(username, password, email)
     if not user:
-        return render(request, "signup.html", status_code=400, error=error)
+        return render(request, "signup.html", status_code=400, error=error, email=email, username=username)
     token = create_session(user["id"])
-    return _session_response(_notice("/app", "Account created. Your token balance is ready to use."), request, token)
+    return _session_response(_notice("/app", "Account created."), request, token)
+
+
+@app.get("/reset")
+async def reset_page(request: Request):
+    ready, mail_error = describe_mailer()
+    return render(request, "reset.html", mail_ready=ready, mail_error="" if ready else mail_error)
+
+
+@app.post("/reset")
+async def reset_submit(request: Request, email: str = Form("")):
+    ok, message = issue_reset(email, _base(request))
+    return render(
+        request,
+        "reset.html",
+        status_code=200 if ok else 400,
+        error="" if ok else message,
+        notice=message if ok else "",
+    )
+
+
+@app.get("/reset/confirm")
+async def reset_confirm_page(request: Request, token: str = ""):
+    return render(request, "reset_confirm.html", token=token)
+
+
+@app.post("/reset/confirm")
+async def reset_confirm_submit(request: Request, token: str = Form(""), password: str = Form("")):
+    user, error = consume_reset_token(token)
+    if not user:
+        return render(request, "reset_confirm.html", status_code=400, error=error, token=token)
+    if len(password or "") < 8:
+        return render(request, "reset_confirm.html", status_code=400, error="Password must be at least 8 characters.", token=token)
+    with tx() as conn:
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), user["id"]))
+    session = create_session(user["id"])
+    return _session_response(_notice("/app", "Password updated."), request, session)
+
+
+@app.get("/app/users")
+async def users_page(request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not user.get("is_admin"):
+        return render(request, "users.html", user=user, active="users", forbidden=True, people=[])
+    people = []
+    for account in list_users():
+        people.append({**account, "used_today": urls_used_today(account["id"])})
+    return render(request, "users.html", user=user, active="users", forbidden=False, people=people)
+
+
+@app.post("/app/users/{user_id}/password")
+async def admin_reset_password(user_id: int, request: Request, password: str = Form("")):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not user.get("is_admin"):
+        raise HTTPException(403, "Admin only.")
+    error = set_user_password(user_id, password)
+    if error:
+        return _notice("/app/users", error)
+    return _notice("/app/users", "Password updated. It was not emailed.")
+
+
+@app.post("/app/users/{user_id}/disable")
+async def admin_disable_user(user_id: int, request: Request, disabled: str = Form("1")):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    if not user.get("is_admin"):
+        raise HTTPException(403, "Admin only.")
+    error = set_user_disabled(user_id, disabled == "1")
+    if error:
+        return _notice("/app/users", error)
+    return _notice("/app/users", "Account disabled." if disabled == "1" else "Account enabled.")
 
 
 @app.post("/logout")
@@ -354,13 +477,22 @@ async def create_project_route(
     daily_speed: int = Form(10),
     urls: str = Form(""),
     upload: Optional[UploadFile] = File(None),
+    notes: str = Form(""),
+    tags: str = Form(""),
+    sitemap_url: str = Form(""),
 ):
     user, redirect = _need(request)
     if redirect:
         return redirect
     target = registrable_host(target_domain) or get_setting("default_target_domain") or DEFAULT_TARGET_DOMAIN
     project, error = create_project(
-        user, name=name, target_domain=target, project_type=project_type, daily_speed=daily_speed
+        user,
+        name=name,
+        target_domain=target,
+        project_type=project_type,
+        daily_speed=daily_speed,
+        notes=notes,
+        tags=tags,
     )
     if not project:
         user = get_user(user["id"]) or user
@@ -378,12 +510,20 @@ async def create_project_route(
             form={"name": name, "project_type": project_type, "urls": urls},
         )
     lines = await _lines_from_upload(upload, urls)
-    result = add_urls(user, project, lines, "Initial batch") if lines else {"added": 0, "duplicates": 0, "skipped": 0, "not_charged": 0}
+    sitemap_note = ""
+    if sitemap_url.strip():
+        locs, sitemap_note = await _fetch_sitemap(sitemap_url.strip())
+        lines.extend(locs)
+    result = add_urls(user, project, lines, "Initial batch") if lines else {"added": 0, "duplicates": 0, "skipped": 0, "not_charged": 0, "limit_message": ""}
     message = f"Project created. Added {result['added']} link(s)."
-    if result.get("not_charged"):
-        message += f" {result['not_charged']} skipped because the token balance ran out."
     if result.get("duplicates"):
         message += f" {result['duplicates']} duplicate(s) ignored."
+    if result.get("skipped"):
+        message += f" {result['skipped']} line(s) were not URLs."
+    if result.get("limit_message"):
+        message += " " + result["limit_message"]
+    if sitemap_note:
+        message += " " + sitemap_note
     return _notice(f"/app/projects/{project['id']}", message)
 
 
@@ -459,11 +599,6 @@ async def unarchive_project(project_id: int, request: Request):
     user = get_user(user["id"]) or user
     if not project:
         raise HTTPException(404, "Project not found")
-    if active_count(user["id"]) >= int(user.get("project_limit") or 5):
-        return _notice("/app/archive", "Project limit reached. Archive another project first.")
-    free = int(user.get("daily_speed_cap") or 0) - allocated_speed(user["id"])
-    if int(project["daily_speed"]) > free:
-        return _notice("/app/archive", f"Only {max(free, 0)} per day is free. Lower this project's speed after you free up quota.")
     set_run_status(user["id"], project_id, "stopped")
     return _notice(f"/app/projects/{project_id}", "Project restored in the stopped state. Resume it when you want the queue to run.")
 
@@ -509,12 +644,12 @@ async def add_project_urls(
     lines = await _lines_from_upload(upload, urls)
     result = add_urls(user, project, lines, "Added from project")
     message = f"Added {result['added']} link(s)."
-    if result.get("not_charged"):
-        message += f" {result['not_charged']} not added (not enough tokens)."
     if result.get("duplicates"):
         message += f" {result['duplicates']} duplicate(s)."
     if result.get("skipped"):
         message += f" {result['skipped']} line(s) were not URLs."
+    if result.get("limit_message"):
+        message += " " + result["limit_message"]
     return _notice(f"/app/projects/{project_id}", message)
 
 
@@ -747,6 +882,22 @@ async def settings_page(request: Request):
     settings = get_settings()
     if settings.get("serp_api_key"):
         settings["serp_api_key"] = _mask(settings["serp_api_key"])
+    for setting_key, env_name, flag in (
+        ("bing_webmaster_api_key", "BING_WEBMASTER_API_KEY", "bing_from_env"),
+        ("yandex_webmaster_token", "YANDEX_WEBMASTER_TOKEN", "yandex_token_from_env"),
+    ):
+        value, source = setting_or_env(setting_key, env_name)
+        settings[flag] = source == "env"
+        settings[setting_key] = _mask(value) if value and source == "settings" else ""
+    for setting_key, env_name in (
+        ("yandex_webmaster_user_id", "YANDEX_WEBMASTER_USER_ID"),
+        ("yandex_webmaster_host_id", "YANDEX_WEBMASTER_HOST_ID"),
+        ("yandex_site_host", "YANDEX_WEBMASTER_HOST"),
+        ("bing_site_url", "BING_WEBMASTER_SITE_URL"),
+    ):
+        value, source = setting_or_env(setting_key, env_name)
+        if source == "env" and not settings.get(setting_key):
+            settings[setting_key] = value
     hosts = get_conn().execute("SELECT * FROM owned_hosts ORDER BY host").fetchall()
     info = google_indexing.service_account_info() or {}
     return render(
@@ -777,6 +928,12 @@ async def save_settings(
     tokens_per_url: str = Form("1"),
     host: str = Form(""),
     host_id: int = Form(0),
+    bing_webmaster_api_key: str = Form(""),
+    bing_site_url: str = Form(""),
+    yandex_webmaster_token: str = Form(""),
+    yandex_webmaster_user_id: str = Form(""),
+    yandex_webmaster_host_id: str = Form(""),
+    yandex_site_host: str = Form(""),
 ):
     user, redirect = _need(request)
     if redirect:
@@ -824,6 +981,14 @@ async def save_settings(
         updates["indexnow_key"] = key
     if serp_api_key.strip() and "••••" not in serp_api_key:
         updates["serp_api_key"] = serp_api_key.strip()
+    if "••••" not in bing_webmaster_api_key:
+        updates["bing_webmaster_api_key"] = bing_webmaster_api_key.strip()
+    if "••••" not in yandex_webmaster_token:
+        updates["yandex_webmaster_token"] = yandex_webmaster_token.strip()
+    updates["bing_site_url"] = bing_site_url.strip()
+    updates["yandex_webmaster_user_id"] = yandex_webmaster_user_id.strip()
+    updates["yandex_webmaster_host_id"] = yandex_webmaster_host_id.strip()
+    updates["yandex_site_host"] = registrable_host(yandex_site_host)
     set_settings(updates)
     return _notice("/app/settings", "Settings saved.")
 

@@ -2,18 +2,24 @@
 {% block title %}Pricing · Backlink Indexer{% endblock %}
 {% block content %}
 <section class="hero-public">
-  <h1>Free plan</h1>
-  <p class="honest">Prices here are account limits, not a card checkout. Payments are not connected. The operator can add tokens from Plans.</p>
-  <div class="card">
-    <h2>Free</h2>
-    <ul>
-      <li>5 active projects</li>
-      <li>100 links per day across those projects</li>
-      <li>100 starter tokens, 1 token per accepted URL</li>
-      <li>Discovery hub, IndexNow on owned hosts, Google Indexing API on your verified site</li>
-      <li>SERP index checks when you add a key. Otherwise status stays Unknown</li>
-    </ul>
-    <a class="btn red" href="/signup">Start free</a>
+  <h1>Two ways in</h1>
+  <p class="honest">There is no card checkout. Sign up with a username, email, and password.</p>
+  <div class="grid">
+    <article class="card">
+      <h2>Account</h2>
+      <ul>
+        <li>Unlimited projects</li>
+        <li>100 new URLs per day</li>
+        <li>Discovery hub, IndexNow, and optional Bing, Yandex, and Google submission</li>
+        <li>Index status only after a real check or your mark</li>
+      </ul>
+      <a class="btn red" href="/signup">Create an account</a>
+    </article>
+    <article class="card vip-card">
+      <p class="vip-badge">VIP</p>
+      <h2>Operator</h2>
+      <p>The address in <code>UNLIMITED_EMAILS</code> is the admin account: unlimited URLs, the users page, and settings. Everyone else signs in the same way, with a username and password. Engine quotas still apply.</p>
+    </article>
   </div>
 </section>
 {% endblock %}

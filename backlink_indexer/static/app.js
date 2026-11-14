@@ -1,3 +1,13 @@
+const themeToggle = document.getElementById("themeToggle");
+if (themeToggle) {
+  const saved = localStorage.getItem("bi-theme");
+  if (saved) document.documentElement.dataset.theme = saved;
+  themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("bi-theme", next);
+  });
+}
 const toggle = document.getElementById("menuToggle");
 const sidebar = document.getElementById("sidebar");
 if (toggle && sidebar) {

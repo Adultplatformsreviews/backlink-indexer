@@ -1,0 +1,55 @@
+{% extends "layout.html" %}
+{% block title %}Users · Backlink Indexer{% endblock %}
+{% block content %}
+<h1 class="page-title">Users</h1>
+{% if forbidden %}
+<p class="error">Only the operator account can open this page.</p>
+{% else %}
+<p class="sub">Daily URL counts reset each calendar day. Passwords are stored hashed and are not emailed from this page.</p>
+<div class="card">
+  <table class="data">
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Email</th>
+        <th>Today</th>
+        <th>Status</th>
+        <th>Password</th>
+        <th>Access</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for person in people %}
+      <tr>
+        <td>{{ person.username }}{% if person.unlimited %} <span class="vip-badge">VIP</span>{% endif %}</td>
+        <td>{{ person.email }}</td>
+        <td>{% if person.unlimited %}{{ person.used_today }} · unlimited{% else %}{{ person.used_today }} of 100{% endif %}</td>
+        <td>{% if person.disabled %}Disabled{% elif person.is_admin %}Admin{% else %}Active{% endif %}</td>
+        <td>
+          <form method="post" action="/app/users/{{ person.id }}/password">
+            <input name="password" type="password" minlength="8" autocomplete="new-password" aria-label="New password for {{ person.username }}" required>
+            <button class="btn" type="submit">Reset</button>
+          </form>
+        </td>
+        <td>
+          {% if person.unlimited %}
+          <span class="sub">Operator</span>
+          {% elif person.disabled %}
+          <form method="post" action="/app/users/{{ person.id }}/disable">
+            <input type="hidden" name="disabled" value="0">
+            <button class="btn" type="submit">Enable</button>
+          </form>
+          {% else %}
+          <form method="post" action="/app/users/{{ person.id }}/disable">
+            <input type="hidden" name="disabled" value="1">
+            <button class="btn" type="submit">Disable</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

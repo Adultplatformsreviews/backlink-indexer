@@ -10,7 +10,9 @@ from fastapi.templating import Jinja2Templates
 from . import __version__
 from .auth import user_from_session
 from .database import bootstrap_db, get_conn
+from .limits import usage_status
 from .projects import TYPE_LABELS, archive_count, active_count
+from .services.quotas import snapshot as quota_snapshot
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
@@ -18,6 +20,8 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 STATE_LABELS = {
     "unknown": "Unknown",
     "submitted": "Submitted",
+    "accepted": "Accepted",
+    "rejected": "Rejected",
     "indexed": "Indexed",
     "not_indexed": "Not indexed",
     "skipped": "Skipped",
@@ -90,9 +94,13 @@ def render(request: Request, name: str, status_code: int = 200, **ctx):
         "projects_count": 0,
         "archive_count": 0,
         "unread": 0,
+        "usage": None,
+        "engine_quotas": [],
     }
     if user:
         base.update(nav_counts(user["id"]))
+        base["usage"] = usage_status(user)
+        base["engine_quotas"] = quota_snapshot()
     report = bootstrap_db()
     base["ephemeral"] = report["ephemeral_storage"]
     base["database_env"] = report["database_env"]

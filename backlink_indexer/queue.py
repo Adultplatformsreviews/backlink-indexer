@@ -12,7 +12,10 @@ import httpx
 
 from .config import FETCH_CONCURRENCY, PUBLIC_BASE_URL, USER_AGENT
 from .database import get_conn, get_setting, get_settings, set_setting, tx, utcnow
-from .services import google_indexing, indexnow, serp, websub
+from .services import bing_webmaster, google_indexing, indexnow, serp, websub, yandex_webmaster
+from .services.quotas import consume as consume_quota
+from .services.quotas import remaining as quota_remaining
+from .services.secrets import setting_or_env
 from .services.precheck import RobotsCache, precheck_url
 from .services.urlutil import host_of, registrable_host
 
@@ -194,6 +197,15 @@ def _save_url(
             )
 
 
+def _prefer(current: str, new: str) -> str:
+    """Keep an acceptance if any real submission was accepted. Never upgrade to indexed."""
+    if new == "accepted" or current in {"", "unknown"}:
+        return new or current
+    if current == "accepted":
+        return current
+    return new or current
+
+
 async def _submit_owned(
     client: httpx.AsyncClient,
     url: str,
@@ -207,29 +219,85 @@ async def _submit_owned(
     notes: list[str] = []
     if not _is_owned(url, owned):
         return engines, "", extra
+    host = host_of(url)
+    deferred = False
     if key:
-        host = host_of(url)
-        key_location = f"https://{host}/{key}.txt"
-        if base and registrable_host(host_of(base)) == registrable_host(host):
-            key_location = indexnow.key_file_url(base, key)
-        result = await indexnow.submit(client, [url], key, key_location)
-        extra["indexnow_detail"] = (result.get("detail") or "")[:300]
-        if result.get("ok"):
-            engines["yandex"] = "submitted"
-            engines["bing"] = "submitted"
-            notes.append("IndexNow accepted this URL for Bing and Yandex. That is a submission, not a confirmed index.")
+        if quota_remaining("indexnow") < 1:
+            deferred = True
+            notes.append("IndexNow fair-use quota is used for today. This URL stays queued for the next day.")
+            results = {}
         else:
-            notes.append(result.get("detail") or "IndexNow did not accept this URL.")
+            key_location = f"https://{host}/{key}.txt"
+            if base and registrable_host(host_of(base)) == registrable_host(host):
+                key_location = indexnow.key_file_url(base, key)
+            results = await indexnow.submit_all(client, [url], key, key_location)
+            consume_quota("indexnow", 1)
+            bing_now = results.get("bing") or {}
+            yandex_now = results.get("yandex") or {}
+            shared = results.get("indexnow") or {}
+
+            def _state(result: dict) -> str:
+                if result.get("state") in {"accepted", "rejected"}:
+                    return result["state"]
+                if result.get("ok"):
+                    return "accepted"
+                return "rejected"
+
+            engines["bing"] = _prefer("unknown", _state(bing_now) if bing_now else _state(shared))
+            engines["yandex"] = _prefer("unknown", _state(yandex_now) if yandex_now else _state(shared))
+            extra["indexnow_detail"] = " ".join(
+                f"{name}={item.get('detail')}" for name, item in results.items()
+            )[:500]
+            notes.append("IndexNow: " + extra["indexnow_detail"] + " Acceptance is not an index confirmation.")
     else:
         notes.append("Host is owned, but no IndexNow key is saved in Settings.")
-    if google_indexing.service_account_present():
-        result = google_indexing.publish_url(url)
-        extra["google_detail"] = (result.get("detail") or "")[:300]
-        if result.get("ok"):
-            engines["google"] = "submitted"
-            notes.append("Google Indexing API accepted the URL. That is not proof it is indexed.")
+
+    bing_key, _bing_source = setting_or_env("bing_webmaster_api_key", "BING_WEBMASTER_API_KEY")
+    bing_site = (get_setting("bing_site_url") or "").strip() or f"https://{host}/"
+    site_host = registrable_host(host_of(bing_site))
+    if bing_key and (not site_host or site_host == registrable_host(host)):
+        bing_result = await bing_webmaster.submit_url(client, bing_key, bing_site, url)
+        notes.append(bing_result.get("detail") or "Bing Webmaster returned no detail.")
+        if bing_result.get("state") == "deferred":
+            deferred = True
+        elif bing_result.get("state") in {"accepted", "rejected"}:
+            engines["bing"] = _prefer(engines["bing"], bing_result["state"])
+    elif bing_key:
+        notes.append("Bing Webmaster key is set, but this URL is not on the verified Bing site URL.")
+
+    token, _token_source = setting_or_env("yandex_webmaster_token", "YANDEX_WEBMASTER_TOKEN")
+    user_id, _user_source = setting_or_env("yandex_webmaster_user_id", "YANDEX_WEBMASTER_USER_ID")
+    host_id, _host_source = setting_or_env("yandex_webmaster_host_id", "YANDEX_WEBMASTER_HOST_ID")
+    yandex_host = registrable_host(get_setting("yandex_site_host") or host)
+    if token and user_id and host_id and yandex_host == registrable_host(host):
+        quota = await yandex_webmaster.fetch_quota(client, token, user_id, host_id)
+        if not quota.get("ok"):
+            notes.append(quota.get("detail") or "Yandex recrawl quota could not be read.")
+        elif int(quota.get("remainder") or 0) < 1:
+            deferred = True
+            notes.append("Yandex recrawl daily quota is exhausted. This URL stays queued for the next day.")
         else:
-            notes.append("Google Indexing API: " + (result.get("detail") or "not accepted."))
+            recrawl = await yandex_webmaster.recrawl_url(client, token, user_id, host_id, url)
+            notes.append(recrawl.get("detail") or "Yandex recrawl returned no detail.")
+            if recrawl.get("state") in {"accepted", "rejected"}:
+                engines["yandex"] = _prefer(engines["yandex"], recrawl["state"])
+    elif token or user_id or host_id:
+        notes.append("Yandex recrawl needs an OAuth token, user id, and host id. Recrawl was not sent.")
+
+    if google_indexing.service_account_present():
+        if quota_remaining("google_indexing") < 1:
+            deferred = True
+            notes.append("Google Indexing API daily quota (200) is used. This URL stays queued for the next day.")
+        else:
+            result = google_indexing.publish_url(url)
+            extra["google_detail"] = (result.get("detail") or "")[:300]
+            if result.get("ok"):
+                engines["google"] = "submitted"
+                consume_quota("google_indexing", 1)
+                notes.append("Google Indexing API accepted the URL. That is not proof it is indexed.")
+            else:
+                notes.append("Google Indexing API: " + (result.get("detail") or "not accepted."))
+    extra["deferred"] = deferred
     return engines, " ".join(notes).strip(), extra
 
 
@@ -301,8 +369,23 @@ async def _process_row(
         base = _public_base()
         key = get_setting("indexnow_key")
         engines, owned_note, extra = await _submit_owned(client, row["url"], owned, base, key)
+        if owned_note:
+            _record_submission(row["id"], "submission", engines.get("bing") or "unknown", owned_note)
         precheck["google_detail"] = extra.get("google_detail") or ""
         precheck["indexnow_detail"] = extra.get("indexnow_detail") or ""
+        if extra.get("deferred"):
+            note = owned_note
+            _save_url(
+                row["id"], project["id"], precheck=precheck, queue_status="queued",
+                note=note, engines=engines, submission_status="quota_hold",
+                index_source="", count_toward_speed=False,
+            )
+            with tx() as conn:
+                conn.execute(
+                    "UPDATE urls SET hold_until=?, updated_at=? WHERE id=?",
+                    (_tomorrow(), utcnow(), row["id"]),
+                )
+            return "deferred"
         if _is_owned(row["url"], owned):
             note = owned_note or "Owned host: no IndexNow key or Google service account is configured. Listed on the discovery hub only."
         elif project_type == "instant":
@@ -342,14 +425,29 @@ def _due_projects(user_id: Optional[int], project_id: Optional[int]) -> list[dic
     return get_conn().execute(sql, params).fetchall()
 
 
+def _record_submission(url_id: int, method: str, status: str, detail: str) -> None:
+    with tx() as conn:
+        conn.execute(
+            """INSERT INTO submission_log (url_id, method, status, detail, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (url_id, method, status, (detail or "")[:500], utcnow()),
+        )
+
+
+def _tomorrow() -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 def _queued_rows(project_id: int, limit: int) -> list[dict]:
     if limit <= 0:
         return []
     return get_conn().execute(
         """SELECT * FROM urls
            WHERE project_id = ? AND queue_status = 'queued'
+             AND (hold_until IS NULL OR hold_until = '' OR hold_until <= ?)
            ORDER BY id ASC LIMIT ?""",
-        (project_id, limit),
+        (project_id, _today(), limit),
     ).fetchall()
 
 

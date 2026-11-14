@@ -3,13 +3,13 @@
 {% block content %}
 <section class="card auth-card">
   <h1>Log in</h1>
-  <p class="sub">Use your username and password. The public discovery hub stays open without an account.</p>
+  <p class="sub">Use your username or email and your password.</p>
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{ next or '/app' }}">
-    <label class="field">Username <input name="username" autocomplete="username" required></label>
-    <label class="field">Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <label class="field">Username or email <input name="username" autocomplete="username" required value="{{ username or '' }}"></label>
+    <label class="field">Password <input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
     <button class="btn red" type="submit">Log in</button>
   </form>
-  <p class="sub">No account yet? <a href="/signup">Sign up</a> · <a href="/pricing">View plans</a></p>
+  <p class="sub">New here? <a href="/signup">Create an account</a> · <a href="/reset">Forgot password</a> · <a href="/pricing">View plans</a></p>
 </section>
 {% endblock %}

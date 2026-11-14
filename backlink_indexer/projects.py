@@ -28,6 +28,9 @@ def _decorate(row: dict) -> dict:
     data["google_indexed"] = int(data.get("google_indexed") or 0)
     data["yandex_indexed"] = int(data.get("yandex_indexed") or 0)
     data["bing_indexed"] = int(data.get("bing_indexed") or 0)
+    data["google_accepted"] = int(data.get("google_accepted") or 0)
+    data["yandex_accepted"] = int(data.get("yandex_accepted") or 0)
+    data["bing_accepted"] = int(data.get("bing_accepted") or 0)
     data["progress"] = round(100 * handled / total) if total else 0
     data["type_label"] = TYPE_LABELS.get(data.get("project_type") or "", data.get("project_type") or "")
     data["run_label"] = RUN_LABELS.get(data.get("run_status") or "", data.get("run_status") or "")
@@ -41,7 +44,10 @@ _STATS = """
     (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.queue_status IN ('sent', 'skipped', 'failed')) AS handled,
     (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.google_state = 'indexed') AS google_indexed,
     (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.yandex_state = 'indexed') AS yandex_indexed,
-    (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.bing_state = 'indexed') AS bing_indexed
+    (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.bing_state = 'indexed') AS bing_indexed,
+    (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.google_state IN ('accepted', 'submitted')) AS google_accepted,
+    (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.yandex_state IN ('accepted', 'submitted')) AS yandex_accepted,
+    (SELECT COUNT(*) FROM urls u WHERE u.project_id = p.id AND u.bing_state IN ('accepted', 'submitted')) AS bing_accepted
 """
 
 
@@ -131,6 +137,8 @@ def create_project(
     target_domain: str,
     project_type: str,
     daily_speed: int,
+    notes: str = "",
+    tags: str = "",
 ) -> tuple[Optional[dict], str]:
     name = (name or "").strip()
     if not name or len(name) > 80:
@@ -143,22 +151,18 @@ def create_project(
         return None, "Daily speed must be a number."
     if daily_speed < 1:
         return None, "Daily speed must be at least 1."
-    limit = int(user.get("project_limit") or 5)
-    if active_count(user["id"]) >= limit:
-        return None, f"This plan allows {limit} active project(s). Archive one to add another."
-    cap = int(user.get("daily_speed_cap") or 100)
-    free = cap - allocated_speed(user["id"])
-    if daily_speed > free:
-        return None, f"Only {max(free, 0)} per day is still free to distribute (cap {cap})."
+    notes = (notes or "").strip()[:500]
+    tags = (tags or "").strip()[:200]
     now = utcnow()
     with tx() as conn:
         project_id = insert_id(
             conn,
             """INSERT INTO projects
                (user_id, name, target_domain, include_subdomains, project_type,
-                daily_speed, run_status, sent_today, sent_on, created_at, updated_at)
-               VALUES (?, ?, ?, 1, ?, ?, 'running', 0, '', ?, ?)""",
-            (user["id"], name, target_domain, project_type, daily_speed, now, now),
+                daily_speed, run_status, sent_today, sent_on, created_at, updated_at,
+                notes, tags)
+               VALUES (?, ?, ?, 1, ?, ?, 'running', 0, '', ?, ?, ?, ?)""",
+            (user["id"], name, target_domain, project_type, daily_speed, now, now, notes, tags),
         )
     return get_project(project_id, user["id"]), ""
 
@@ -175,10 +179,6 @@ def set_speed(user: dict, project_id: int, daily_speed: int) -> str:
         return "Daily speed must be a number."
     if daily_speed < 1:
         return "Daily speed must be at least 1."
-    cap = int(user.get("daily_speed_cap") or 100)
-    free = cap - allocated_speed(user["id"], exclude_project=project_id)
-    if daily_speed > free:
-        return f"Only {max(free, 0)} per day is still free to distribute (cap {cap})."
     with tx() as conn:
         conn.execute(
             "UPDATE projects SET daily_speed = ?, updated_at = ? WHERE id = ? AND user_id = ?",

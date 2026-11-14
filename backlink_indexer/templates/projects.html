@@ -13,8 +13,8 @@
   </div>
   <div>
     <div class="k">Projects</div>
-    <div class="v">{{ speed.projects }} <span>of {{ user.project_limit }}</span></div>
-    <div class="meter"><i style="width: {{ (100 * speed.projects / user.project_limit) if user.project_limit else 0 }}%"></i></div>
+    <div class="v">{{ speed.projects }} <span>unlimited</span></div>
+    <div class="meter"><i style="width: 100%"></i></div>
   </div>
   <div>
     <div class="k">Sending / checking speed</div>
@@ -22,9 +22,9 @@
     <div class="s good">Free {{ speed.free }} · distribute</div>
   </div>
   <div>
-    <div class="k">Token balance</div>
-    <div class="v">{{ user.token_balance }}</div>
-    <a class="btn white" href="/app/plans">Top up</a>
+    <div class="k">{% if user.unlimited %}Account{% else %}Today{% endif %}</div>
+    <div class="v">{% if user.unlimited %}VIP{% else %}{{ usage.used }} <span>of {{ usage.limit }}</span>{% endif %}</div>
+    <a class="btn white" href="/app/plans">{% if user.unlimited %}VIP{% else %}Usage{% endif %}</a>
   </div>
 </section>
 <div class="tabs">
@@ -61,10 +61,10 @@
         <span class="chip">Speed <b>{{ project.daily_speed }}/day</b></span>
         {% endif %}
         <span class="chip">Price <b>{{ token_cost }} token</b></span>
-        <span class="chip engines" title="Confirmed indexed only. Unknown results are not counted.">
-          <span>G <b>{{ project.google_indexed }}</b></span>
-          <span>Y <b>{{ project.yandex_indexed }}</b></span>
-          <span>B <b>{{ project.bing_indexed }}</b></span>
+        <span class="chip engines" title="Indexed counts are confirmed checks only. Accepted counts are API submissions, not index confirmations.">
+          <span>G <b>{{ project.google_indexed }}</b> <em>{{ project.google_accepted }} accepted</em></span>
+          <span>Y <b>{{ project.yandex_indexed }}</b> <em>{{ project.yandex_accepted }} accepted</em></span>
+          <span>B <b>{{ project.bing_indexed }}</b> <em>{{ project.bing_accepted }} accepted</em></span>
         </span>
       </div>
     </div>

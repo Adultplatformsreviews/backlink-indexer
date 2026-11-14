@@ -3,7 +3,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from backlink_indexer.database import close_conn, get_conn, resolve_database_url
+from backlink_indexer.database import close_conn, get_conn, resolve_database_url, tx, utcnow
+from backlink_indexer.limits import record_added
 from backlink_indexer.main import app
 
 
@@ -336,6 +337,107 @@ def test_password_reset_requires_a_mailer_and_login_codes_are_absent(client, mon
         follow_redirects=False,
     )
     assert short.status_code == 400
+
+
+def test_import_search_resubmit_history_and_chart(client, monkeypatch):
+    signup(client, "nina", "password1")
+    created = client.post(
+        "/app/projects",
+        data={"name": "Ledger", "project_type": "indexing", "target_domain": "example.com", "daily_speed": "5", "urls": ""},
+        follow_redirects=False,
+    )
+    path = created.headers["location"].split("?")[0]
+    pasted = client.post(
+        path + "/urls",
+        data={"urls": "https://example.com/keep\nhttps://example.com/keep\nnope"},
+        follow_redirects=True,
+    )
+    assert "duplicate" in pasted.text.lower()
+    assert "not URLs" in pasted.text
+    uploaded = client.post(
+        path + "/urls",
+        data={"urls": ""},
+        files={"upload": ("links.txt", b"https://example.com/from-txt\n", "text/plain")},
+        follow_redirects=True,
+    )
+    assert "Added 1" in uploaded.text
+
+    async def fake_sitemap(url):
+        assert url.endswith("/sitemap.xml")
+        return ["https://example.com/mapped", "https://example.com/keep"], ""
+
+    monkeypatch.setattr("backlink_indexer.main._fetch_sitemap", fake_sitemap)
+    mapped = client.post(
+        path + "/urls",
+        data={"sitemap_url": "https://example.com/sitemap.xml"},
+        follow_redirects=True,
+    )
+    assert "Added 1" in mapped.text
+    assert "duplicate" in mapped.text.lower()
+
+    found = client.get(path + "?q=mapped")
+    assert "example.com/mapped" in found.text
+    assert "example.com/keep" not in found.text
+    assert "Search" in found.text
+
+    keep = get_conn().execute("SELECT id FROM urls WHERE url LIKE '%/keep'").fetchone()
+    with tx() as conn:
+        conn.execute(
+            "UPDATE urls SET queue_status='failed', bing_state='rejected' WHERE id=?",
+            (keep["id"],),
+        )
+        conn.execute(
+            """INSERT INTO submission_log (url_id, method, status, detail, created_at)
+               VALUES (?, 'bing', 'rejected', 'Bing Webmaster: HTTP 400', ?)""",
+            (keep["id"], utcnow()),
+        )
+    close_conn()
+    rejected = client.get(path + "?filter=rejected")
+    assert "example.com/keep" in rejected.text
+    resent = client.post(path + "/bulk", data={"action": "resubmit_failed"}, follow_redirects=True)
+    assert "Re-queued 1" in resent.text
+    status = get_conn().execute("SELECT queue_status, hold_until FROM urls WHERE id=?", (keep["id"],)).fetchone()
+    close_conn()
+    assert status["queue_status"] == "queued"
+    assert status["hold_until"] == ""
+
+    history = client.get(f"{path}/urls/{keep['id']}/history")
+    assert history.status_code == 200
+    body = history.json()
+    assert body["url"].endswith("/keep")
+    assert body["attempts"][0]["method"] == "bing"
+    assert body["attempts"][0]["status"] == "rejected"
+    assert "HTTP 400" in body["attempts"][0]["detail"]
+    assert client.get(f"{path}/urls/999999/history").status_code == 404
+
+    chart = client.get("/app?days=14")
+    assert "Submissions per engine" in chart.text
+    assert "Bing" in chart.text
+    assert "Last 14 days" in chart.text
+    assert "Last 30 days" in client.get("/app?days=30").text
+    assert "Start free" in client.get("/").text
+
+
+def test_import_respects_daily_limit(client):
+    signup(client, "cap2", "password1")
+    user_id = get_conn().execute("SELECT id FROM users WHERE username='cap2'").fetchone()["id"]
+    close_conn()
+    record_added(user_id, 99)
+    created = client.post(
+        "/app/projects",
+        data={"name": "Cap", "project_type": "indexing", "target_domain": "example.com", "daily_speed": "4", "urls": ""},
+        follow_redirects=False,
+    )
+    path = created.headers["location"].split("?")[0]
+    added = client.post(
+        path + "/urls",
+        data={"urls": "https://example.com/a\nhttps://example.com/b"},
+        follow_redirects=True,
+    )
+    assert "Daily limit" in added.text
+    count = get_conn().execute("SELECT COUNT(*) AS c FROM urls").fetchone()["c"]
+    close_conn()
+    assert count == 1
 
 
 def test_csv_export(client):

@@ -219,6 +219,7 @@ def list_urls(
         "sent": "queue_status = 'sent'",
         "skipped": "queue_status = 'skipped'",
         "failed": "queue_status = 'failed'",
+        "rejected": "(google_state = 'rejected' OR yandex_state = 'rejected' OR bing_state = 'rejected')",
         "indexed": "(google_state = 'indexed' OR yandex_state = 'indexed' OR bing_state = 'indexed')",
         "unknown": "google_state = 'unknown' AND yandex_state = 'unknown' AND bing_state = 'unknown'",
         "dead": "is_live = 0",

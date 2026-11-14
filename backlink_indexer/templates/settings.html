@@ -1,9 +1,10 @@
 {% extends "layout.html" %}
 {% block title %}Settings · Backlink Indexer{% endblock %}
 {% block content %}
+<p class="kicker">Operator</p>
 <h1 class="page-title">Settings</h1>
 {% if forbidden %}
-<p>Only the operator account (the first signup) can change IndexNow, SERP, and Google keys.</p>
+<p class="error">Only the operator account can change IndexNow, SERP, Bing, Yandex, and Google keys.</p>
 {% else %}
 <form class="card" method="post" action="/app/settings">
   <input type="hidden" name="action" value="save">

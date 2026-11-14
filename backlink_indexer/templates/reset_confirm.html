@@ -1,6 +1,8 @@
 {% extends "layout.html" %}
 {% block title %}Choose a password · Backlink Indexer{% endblock %}
 {% block content %}
+<section class="auth-stage">
+<aside class="auth-aside"><p class="kicker">Recovery</p><h2>Choose what you will type next time.</h2></aside>
 <section class="card auth-card">
   <h1>Choose a new password</h1>
   <form method="post" action="/reset/confirm">
@@ -8,5 +10,6 @@
     <label class="field">New password <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
     <button class="btn red" type="submit">Save password</button>
   </form>
+</section>
 </section>
 {% endblock %}

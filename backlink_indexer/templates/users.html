@@ -1,12 +1,13 @@
 {% extends "layout.html" %}
 {% block title %}Users · Backlink Indexer{% endblock %}
 {% block content %}
+<p class="kicker">Operator</p>
 <h1 class="page-title">Users</h1>
 {% if forbidden %}
 <p class="error">Only the operator account can open this page.</p>
 {% else %}
 <p class="sub">Daily URL counts reset each calendar day. Passwords are stored hashed and are not emailed from this page.</p>
-<div class="card">
+<div class="card table-wrap">
   <table class="data">
     <thead>
       <tr>

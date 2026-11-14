@@ -1,15 +1,23 @@
 {% extends "layout.html" %}
 {% block title %}Log in · Backlink Indexer{% endblock %}
 {% block content %}
-<section class="card auth-card">
-  <h1>Log in</h1>
-  <p class="sub">Use your username or email and your password.</p>
-  <form method="post" action="/login">
-    <input type="hidden" name="next" value="{{ next or '/app' }}">
-    <label class="field">Username or email <input name="username" autocomplete="username" required value="{{ username or '' }}"></label>
-    <label class="field">Password <input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
-    <button class="btn red" type="submit">Log in</button>
-  </form>
-  <p class="sub">New here? <a href="/signup">Create an account</a> · <a href="/reset">Forgot password</a> · <a href="/pricing">View plans</a></p>
+<section class="auth-stage">
+  <aside class="auth-aside">
+    <p class="kicker">Members</p>
+    <h2>Return to the queue.</h2>
+    <div class="gold-rule" aria-hidden="true"></div>
+    <p>Username or email, then your password. No code is emailed just to sign in.</p>
+  </aside>
+  <section class="card auth-card">
+    <h1>Log in</h1>
+    <p class="sub">Use your username or email and your password.</p>
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{ next or '/app' }}">
+      <label class="field">Username or email <input name="username" autocomplete="username" required value="{{ username or '' }}"></label>
+      <label class="field">Password <input name="password" type="password" autocomplete="current-password" required minlength="8"></label>
+      <button class="btn red" type="submit">Log in</button>
+    </form>
+    <p class="sub">New here? <a href="/signup">Create an account</a> · <a href="/reset">Forgot password</a> · <a href="/pricing">View plans</a></p>
+  </section>
 </section>
 {% endblock %}

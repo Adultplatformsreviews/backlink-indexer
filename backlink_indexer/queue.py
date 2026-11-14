@@ -215,8 +215,9 @@ async def _submit_owned(
 ) -> tuple[dict[str, str], str, dict[str, str]]:
     """Return engine states, note, and extra detail fields. Never sets indexed."""
     engines = {"google": "unknown", "yandex": "unknown", "bing": "unknown"}
-    extra = {"google_detail": "", "indexnow_detail": ""}
+    extra: dict[str, Any] = {"google_detail": "", "indexnow_detail": "", "attempts": []}
     notes: list[str] = []
+    attempts: list[dict[str, str]] = extra["attempts"]
     if not _is_owned(url, owned):
         return engines, "", extra
     host = host_of(url)
@@ -224,7 +225,9 @@ async def _submit_owned(
     if key:
         if quota_remaining("indexnow") < 1:
             deferred = True
-            notes.append("IndexNow fair-use quota is used for today. This URL stays queued for the next day.")
+            note = "IndexNow fair-use quota is used for today. This URL stays queued for the next day."
+            notes.append(note)
+            attempts.append({"method": "indexnow", "status": "deferred", "detail": note})
             results = {}
         else:
             key_location = f"https://{host}/{key}.txt"
@@ -249,6 +252,12 @@ async def _submit_owned(
                 f"{name}={item.get('detail')}" for name, item in results.items()
             )[:500]
             notes.append("IndexNow: " + extra["indexnow_detail"] + " Acceptance is not an index confirmation.")
+            for name, item in results.items():
+                attempts.append({
+                    "method": "indexnow" if name == "indexnow" else name,
+                    "status": _state(item),
+                    "detail": f"IndexNow {name}: {item.get('detail') or 'no response body'}"[:500],
+                })
     else:
         notes.append("Host is owned, but no IndexNow key is saved in Settings.")
 
@@ -258,6 +267,11 @@ async def _submit_owned(
     if bing_key and (not site_host or site_host == registrable_host(host)):
         bing_result = await bing_webmaster.submit_url(client, bing_key, bing_site, url)
         notes.append(bing_result.get("detail") or "Bing Webmaster returned no detail.")
+        attempts.append({
+            "method": "bing",
+            "status": str(bing_result.get("state") or "unknown"),
+            "detail": f"Bing Webmaster: {bing_result.get('detail') or 'no response body'}"[:500],
+        })
         if bing_result.get("state") == "deferred":
             deferred = True
         elif bing_result.get("state") in {"accepted", "rejected"}:
@@ -272,13 +286,22 @@ async def _submit_owned(
     if token and user_id and host_id and yandex_host == registrable_host(host):
         quota = await yandex_webmaster.fetch_quota(client, token, user_id, host_id)
         if not quota.get("ok"):
-            notes.append(quota.get("detail") or "Yandex recrawl quota could not be read.")
+            detail = quota.get("detail") or "Yandex recrawl quota could not be read."
+            notes.append(detail)
+            attempts.append({"method": "yandex", "status": "rejected", "detail": f"Yandex quota: {detail}"[:500]})
         elif int(quota.get("remainder") or 0) < 1:
             deferred = True
-            notes.append("Yandex recrawl daily quota is exhausted. This URL stays queued for the next day.")
+            detail = "Yandex recrawl daily quota is exhausted. This URL stays queued for the next day."
+            notes.append(detail)
+            attempts.append({"method": "yandex", "status": "deferred", "detail": detail})
         else:
             recrawl = await yandex_webmaster.recrawl_url(client, token, user_id, host_id, url)
             notes.append(recrawl.get("detail") or "Yandex recrawl returned no detail.")
+            attempts.append({
+                "method": "yandex",
+                "status": str(recrawl.get("state") or "unknown"),
+                "detail": f"Yandex recrawl: {recrawl.get('detail') or 'no response body'}"[:500],
+            })
             if recrawl.get("state") in {"accepted", "rejected"}:
                 engines["yandex"] = _prefer(engines["yandex"], recrawl["state"])
     elif token or user_id or host_id:
@@ -287,16 +310,22 @@ async def _submit_owned(
     if google_indexing.service_account_present():
         if quota_remaining("google_indexing") < 1:
             deferred = True
-            notes.append("Google Indexing API daily quota (200) is used. This URL stays queued for the next day.")
+            detail = "Google Indexing API daily quota (200) is used. This URL stays queued for the next day."
+            notes.append(detail)
+            attempts.append({"method": "google", "status": "deferred", "detail": detail})
         else:
             result = google_indexing.publish_url(url)
             extra["google_detail"] = (result.get("detail") or "")[:300]
             if result.get("ok"):
                 engines["google"] = "submitted"
                 consume_quota("google_indexing", 1)
-                notes.append("Google Indexing API accepted the URL. That is not proof it is indexed.")
+                detail = "Google Indexing API accepted the URL. That is not proof it is indexed."
+                notes.append(detail)
+                attempts.append({"method": "google", "status": "accepted", "detail": extra["google_detail"] or detail})
             else:
-                notes.append("Google Indexing API: " + (result.get("detail") or "not accepted."))
+                detail = "Google Indexing API: " + (result.get("detail") or "not accepted.")
+                notes.append(detail)
+                attempts.append({"method": "google", "status": "rejected", "detail": detail[:500]})
     extra["deferred"] = deferred
     return engines, " ".join(notes).strip(), extra
 
@@ -369,8 +398,13 @@ async def _process_row(
         base = _public_base()
         key = get_setting("indexnow_key")
         engines, owned_note, extra = await _submit_owned(client, row["url"], owned, base, key)
-        if owned_note:
-            _record_submission(row["id"], "submission", engines.get("bing") or "unknown", owned_note)
+        for attempt in extra.get("attempts") or []:
+            _record_submission(
+                row["id"],
+                str(attempt.get("method") or "submission"),
+                str(attempt.get("status") or "unknown"),
+                str(attempt.get("detail") or ""),
+            )
         precheck["google_detail"] = extra.get("google_detail") or ""
         precheck["indexnow_detail"] = extra.get("indexnow_detail") or ""
         if extra.get("deferred"):
@@ -621,6 +655,29 @@ async def check_ids(user_id: int, project_id: int, ids: list[int]) -> tuple[int,
     if updated == 0:
         return 0, "The SERP check did not return an index status. Nothing was changed."
     return updated, ""
+
+
+def resubmit_failed(user_id: int, project_id: int, ids: Optional[list[int]] = None) -> int:
+    """Queue failed or rejected links again. Empty ids means every failed link in the project."""
+    with tx() as conn:
+        owned = conn.execute(
+            "SELECT id FROM projects WHERE id=? AND user_id=?",
+            (project_id, user_id),
+        ).fetchone()
+        if not owned:
+            return 0
+        sql = """UPDATE urls SET queue_status='queued', hold_until='', updated_at=?
+                 WHERE project_id=? AND (
+                   queue_status='failed'
+                   OR google_state='rejected'
+                   OR yandex_state='rejected'
+                   OR bing_state='rejected'
+                 )"""
+        params: list[Any] = [utcnow(), project_id]
+        if ids:
+            sql += f" AND id IN ({','.join('?' * len(ids))})"
+            params.extend(ids)
+        return conn.execute(sql, params).rowcount
 
 
 def requeue(user_id: int, project_id: int, ids: list[int]) -> int:

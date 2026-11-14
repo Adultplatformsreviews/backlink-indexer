@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "backlink_indexer/main.py": {
+    "vercel_app.py": {
       "includeFiles": "backlink_indexer/**"
     }
   },

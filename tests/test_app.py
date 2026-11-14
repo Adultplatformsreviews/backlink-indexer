@@ -557,6 +557,8 @@ def test_engine_selector_and_batch_process(client, monkeypatch):
     page = client.get("/app/new")
     assert "Select all engines" in page.text
     assert "Not configured" in page.text
+    assert 'class="engine-name"' in page.text
+    assert 'class="engine-grid"' in page.text
     assert "bi-theme-2" in client.get("/login").text
     created = client.post(
         "/app/projects",

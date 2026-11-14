@@ -185,13 +185,25 @@ pre { white-space: pre-wrap; color: var(--muted); }
 .tab:hover, .tab.on { color: var(--ink); border-color: var(--gold); background: rgba(123, 47, 247, .1); }
 .tab i { font-style: normal; color: var(--gold); margin-left: .25rem; }
 .search { margin-left: auto; }
-.search input, .field input, .field textarea, .field select, .chip input, select {
+.search input:not([type="checkbox"]):not([type="radio"]),
+.field input:not([type="checkbox"]):not([type="radio"]),
+.field textarea, .field select, .chip input, select {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: .65rem .75rem;
   background: var(--input-bg);
   color: var(--ink);
   width: 100%;
+}
+input[type="checkbox"], input[type="radio"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  min-width: 1.05rem;
+  max-width: 1.05rem;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: #7b2ff7;
 }
 .search input { width: 280px; border-radius: 999px; }
 .field { display: flex; flex-direction: column; gap: .35rem; margin-bottom: .9rem; font-size: .9rem; color: var(--muted); }
@@ -414,9 +426,35 @@ html[data-theme="dark"] .topnav .btn.ghost { background: transparent; color: #ff
 .timeline strong { display: block; color: var(--gold); text-transform: capitalize; }
 .timeline span, .timeline p { color: var(--muted); margin: .15rem 0 0; }
 .page-actions { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: .4rem; }
-.engine-picker { display: grid; gap: .4rem; }
-.engine-picker label { display: flex; gap: .55rem; align-items: center; justify-content: flex-start; width: max-content; max-width: 100%; color: var(--ink); }
-.engine-all { font-weight: 600; }
+.engine-picker { display: block; }
+.engine-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: .45rem 1.25rem;
+  align-items: center;
+}
+.engine-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: .55rem;
+  width: auto;
+  margin: 0;
+  color: var(--ink);
+}
+.engine-name { white-space: nowrap; }
+.engine-row .badge { white-space: nowrap; margin: 0; }
+.engine-all {
+  font-weight: 600;
+  padding-bottom: .65rem;
+  margin-bottom: .65rem;
+  border-bottom: 1px solid var(--line);
+}
+.type input[type="radio"] { margin-right: .4rem; vertical-align: middle; }
+@media (min-width: 760px) {
+  .engine-grid { grid-template-columns: 1fr 1fr; }
+}
 table.data input { width: auto; min-width: 8rem; }
 @media (max-width: 980px) {
   .feature-grid, .stat-grid, .auth-stage, .split, .chart-head { grid-template-columns: 1fr; display: grid; }

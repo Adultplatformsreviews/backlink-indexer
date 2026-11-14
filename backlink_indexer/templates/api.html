@@ -16,7 +16,7 @@
   <form method="post" action="/app/api/revoke" style="display:inline"><button class="btn" type="submit">Revoke</button></form>
   <pre>curl -H "Authorization: Bearer YOUR_KEY" {{ base }}/api/v1/credits
 curl -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"Demo","project_type":"indexing","target_domain":"example.com","daily_speed":10,"urls":["https://example.com/a"]}' \
+  -d '{"name":"Demo","project_type":"indexing","daily_speed":10,"urls":["https://example.com/a"]}' \
   {{ base }}/api/v1/campaigns</pre>
   <p class="sub">Reports count confirmed indexed URLs only. They never guess.</p>
 </div>

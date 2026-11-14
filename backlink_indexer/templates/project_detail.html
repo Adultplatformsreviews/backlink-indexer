@@ -9,7 +9,7 @@
       <span class="badge run {{ project.run_status }}">{{ project.run_label }}</span>
     </div>
     <h1 class="page-title" style="margin-bottom:.2rem">{{ project.name }}</h1>
-    <p class="sub">{{ project.target_domain }} · {{ project.sent }} sent of {{ project.total }} · queue {{ project.queued }} · {% if user.unlimited %}pace Unlimited{% else %}speed {{ project.daily_speed }}/day{% endif %}</p>
+    <p class="sub">{{ project.sent }} sent of {{ project.total }} · queue {{ project.queued }} · {% if user.unlimited %}pace Unlimited{% else %}speed {{ project.daily_speed }}/day{% endif %}</p>
     <p class="sub">Indexed G {{ project.google_indexed }} · Y {{ project.yandex_indexed }} · B {{ project.bing_indexed }}. Accepted submissions G {{ project.google_accepted }} · Y {{ project.yandex_accepted }} · B {{ project.bing_accepted }}.</p>
   </div>
   <div class="side-actions">

@@ -555,6 +555,7 @@ def test_spaced_operator_email_and_queue_ignores_daily_speed(client, monkeypatch
 def test_engine_selector_and_batch_process(client, monkeypatch):
     signup(client, "picker", "password1")
     page = client.get("/app/new")
+    assert "Target domain" not in page.text
     assert "Select all engines" in page.text
     assert "Not configured" in page.text
     assert 'class="engine-name"' in page.text
@@ -575,6 +576,8 @@ def test_engine_selector_and_batch_process(client, monkeypatch):
     )
     path = created.headers["location"].split("?")[0]
     detail = client.get(path)
+    assert "Target domain" not in detail.text
+    assert "sent of" in detail.text
     assert "Select all engines" in detail.text
     assert "Off" in detail.text or "Not configured" in detail.text
 

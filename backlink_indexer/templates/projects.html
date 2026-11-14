@@ -80,7 +80,7 @@
         <span class="badge run {{ project.run_status }}">{{ project.run_label }}</span>
       </div>
       <h2><a href="/app/projects/{{ project.id }}">{{ project.name }}</a></h2>
-      <p class="sub">External links · {{ fmt_date(project.created_at) }} · {{ project.target_domain }}</p>
+      <p class="sub">External links · {{ fmt_date(project.created_at) }}</p>
       <div class="chips">
         <span class="chip">Queue <b>{{ project.queued }}</b></span>
         {% if user.unlimited %}

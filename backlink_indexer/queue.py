@@ -454,7 +454,7 @@ async def _process_row(
         precheck = await precheck_url(
             client,
             row["url"],
-            project["target_domain"],
+            (project.get("target_domain") or "").strip() or host_of(row["url"]) or "",
             bool(project.get("include_subdomains", 1)),
             robots,
         )

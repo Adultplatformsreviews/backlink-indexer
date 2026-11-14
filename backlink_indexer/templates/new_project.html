@@ -18,7 +18,6 @@
       {% endfor %}
     </div>
   </div>
-  <label class="field">Target domain <input name="target_domain" value="{{ default_target }}" placeholder="example.com"></label>
   {% if not user.unlimited %}
   <label class="field">Daily pace <input name="daily_speed" type="number" min="1" value="{{ default_speed }}"> <span class="sub">How many links this project asks the queue to handle per day. Engine quotas can still slow that down.</span></label>
   {% else %}

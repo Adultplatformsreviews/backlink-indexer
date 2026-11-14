@@ -28,8 +28,8 @@
       {% if user.unlimited %}<span class="vip-badge">VIP</span>{% endif %}
       <a class="token-pill" href="/app/plans">{{ usage.label if usage else '' }}</a>
       <a class="user-pill" href="/app/plans">{{ user.email or user.username }}</a>
-      <button class="btn ghost" type="button" id="themeToggle" style="color:inherit">Theme</button>
-      <form method="post" action="/logout"><button class="btn ghost" style="color:#fff;border-color:#333" type="submit">Log out</button></form>
+      <button class="btn ghost" type="button" id="themeToggle">Theme</button>
+      <form method="post" action="/logout"><button class="btn ghost" type="submit">Log out</button></form>
     {% else %}
       <a href="/login">Log in</a>
       <a class="btn red" href="/signup">Sign up</a>

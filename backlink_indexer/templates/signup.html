@@ -1,15 +1,23 @@
 {% extends "layout.html" %}
 {% block title %}Sign up · Backlink Indexer{% endblock %}
 {% block content %}
-<section class="card auth-card">
-  <h1>Create an account</h1>
-  <p class="sub">Choose a username, email, and a password of at least 8 characters. The password is stored as a scrypt hash.</p>
-  <form method="post" action="/signup">
-    <label class="field">Username <input name="username" autocomplete="username" required minlength="3" maxlength="40" value="{{ username or '' }}"></label>
-    <label class="field">Email <input name="email" type="email" autocomplete="email" required value="{{ email or '' }}"></label>
-    <label class="field">Password <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
-    <button class="btn red" type="submit">Create account</button>
-  </form>
-  <p class="sub">Already registered? <a href="/login">Log in</a></p>
+<section class="auth-stage">
+  <aside class="auth-aside">
+    <p class="kicker">Open an account</p>
+    <h2>A name, an email, a password.</h2>
+    <div class="gold-rule" aria-hidden="true"></div>
+    <p>Standard accounts add 100 URLs a day. The operator email is VIP and unlimited. Engine quotas still apply.</p>
+  </aside>
+  <section class="card auth-card">
+    <h1>Create an account</h1>
+    <p class="sub">Choose a username, email, and a password of at least 8 characters. The password is stored as a scrypt hash.</p>
+    <form method="post" action="/signup">
+      <label class="field">Username <input name="username" autocomplete="username" required minlength="3" maxlength="40" value="{{ username or '' }}"></label>
+      <label class="field">Email <input name="email" type="email" autocomplete="email" required value="{{ email or '' }}"></label>
+      <label class="field">Password <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+      <button class="btn red" type="submit">Create account</button>
+    </form>
+    <p class="sub">Already registered? <a href="/login">Log in</a></p>
+  </section>
 </section>
 {% endblock %}

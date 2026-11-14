@@ -17,15 +17,47 @@
     <div class="meter"><i style="width: 100%"></i></div>
   </div>
   <div>
-    <div class="k">Sending / checking speed</div>
+    <div class="k">{% if user.unlimited %}Sending{% else %}Sending / checking speed{% endif %}</div>
+    {% if user.unlimited %}
+    <div class="v">Unlimited</div>
+    <div class="s good">{% for row in engine_quotas %}{{ row.label }} {{ row.remaining }} left{% if not loop.last %} · {% endif %}{% endfor %}</div>
+    {% else %}
     <div class="v">{{ speed.used }} <span>/ day</span></div>
     <div class="s good">Free {{ speed.free }} · distribute</div>
+    {% endif %}
   </div>
   <div>
     <div class="k">{% if user.unlimited %}Account{% else %}Today{% endif %}</div>
-    <div class="v">{% if user.unlimited %}VIP{% else %}{{ usage.used }} <span>of {{ usage.limit }}</span>{% endif %}</div>
+    <div class="v">{% if user.unlimited %}Unlimited{% else %}{{ usage.used }} <span>of {{ usage.limit }}</span>{% endif %}</div>
     <a class="btn white" href="/app/plans">{% if user.unlimited %}VIP{% else %}Usage{% endif %}</a>
   </div>
+</section>
+<section class="card chart-card" aria-label="Submissions per engine">
+  <div class="chart-head">
+    <div>
+      <p class="kicker">Last {{ chart.days }} days</p>
+      <h2>Submissions per engine</h2>
+    </div>
+    <div class="tabs chart-range">
+      <a class="tab {{ 'on' if chart.days == 14 else '' }}" href="/app?days=14">14 days</a>
+      <a class="tab {{ 'on' if chart.days == 30 else '' }}" href="/app?days=30">30 days</a>
+    </div>
+  </div>
+  <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="Submission counts for Google, Bing, Yandex, and IndexNow">
+    <line x1="36" y1="{{ chart.baseline }}" x2="624" y2="{{ chart.baseline }}" class="chart-axis"></line>
+    {% for line in chart.series %}
+    <polyline points="{{ line.points }}" fill="none" stroke="{{ line.color }}" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"></polyline>
+    {% endfor %}
+    {% for label in chart.labels %}
+    <text x="{{ label.x }}" y="192" text-anchor="middle" class="chart-label">{{ label.text }}</text>
+    {% endfor %}
+  </svg>
+  <ul class="legend">
+    {% for line in chart.series %}
+    <li><i style="background: {{ line.color }}"></i>{{ line.label }} <b>{{ line.total }}</b></li>
+    {% endfor %}
+  </ul>
+  {% if chart.empty %}<p class="sub">No engine submissions in this window yet. Accepted calls are counted here. They are not index confirmations.</p>{% endif %}
 </section>
 <div class="tabs">
   <a class="tab {{ 'on' if not selected_type else '' }}" href="/app">All <i>{{ counts.all }}</i></a>
@@ -52,7 +84,9 @@
       <p class="sub">External links · {{ fmt_date(project.created_at) }} · {{ project.target_domain }}</p>
       <div class="chips">
         <span class="chip">Queue <b>{{ project.queued }}</b></span>
-        {% if project.run_status != 'archived' %}
+        {% if user.unlimited %}
+        <span class="chip">Pace <b>Unlimited</b></span>
+        {% elif project.run_status != 'archived' %}
         <form class="chip speed-form" method="post" action="/app/projects/{{ project.id }}/speed?from=list">
           Speed <input name="daily_speed" type="number" min="1" value="{{ project.daily_speed }}" aria-label="Daily speed"> /day
           <button class="btn" type="submit">Save</button>
@@ -60,7 +94,7 @@
         {% else %}
         <span class="chip">Speed <b>{{ project.daily_speed }}/day</b></span>
         {% endif %}
-        <span class="chip">Price <b>{{ token_cost }} token</b></span>
+        {% if not user.unlimited %}<span class="chip">Price <b>{{ token_cost }} token</b></span>{% endif %}
         <span class="chip engines" title="Indexed counts are confirmed checks only. Accepted counts are API submissions, not index confirmations.">
           <span>G <b>{{ project.google_indexed }}</b> <em>{{ project.google_accepted }} accepted</em></span>
           <span>Y <b>{{ project.yandex_indexed }}</b> <em>{{ project.yandex_accepted }} accepted</em></span>

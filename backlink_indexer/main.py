@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .activity import link_history, submission_chart
 from .auth import (
     add_tokens,
     api_key_prefix,
@@ -66,7 +67,7 @@ from .projects import (
     set_speed,
     type_counts,
 )
-from .queue import check_ids, mark_engines, requeue, run_queue
+from .queue import check_ids, mark_engines, requeue, resubmit_failed, run_queue
 from .services import google_indexing, indexnow, websub
 from .services.secrets import setting_or_env
 from .services.urlutil import host_of, registrable_host
@@ -98,6 +99,9 @@ async def startup() -> None:
     # Database setup must not prevent the process from importing or serving /health.
     try:
         init_db()
+        from .auth import promote_operator_accounts
+
+        promote_operator_accounts()
     except Exception:
         pass
     try:
@@ -228,9 +232,12 @@ async def _fetch_sitemap(url: str) -> tuple[list[str], str]:
 
 
 def _account_speed(user: dict) -> dict:
-    cap = int(user.get("daily_speed_cap") or 0)
     used = allocated_speed(user["id"])
-    return {"cap": cap, "used": used, "free": max(0, cap - used), "projects": active_count(user["id"])}
+    projects = active_count(user["id"])
+    if user.get("unlimited"):
+        return {"cap": None, "used": used, "free": None, "projects": projects, "unlimited": True}
+    cap = int(user.get("daily_speed_cap") or 0)
+    return {"cap": cap, "used": used, "free": max(0, cap - used), "projects": projects, "unlimited": False}
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +415,7 @@ async def assistant_removed():
 # ---------------------------------------------------------------------------
 
 @app.get("/app")
-async def projects_page(request: Request, type: str = "", q: str = ""):
+async def projects_page(request: Request, type: str = "", q: str = "", days: int = 14):
     user, redirect = _need(request)
     if redirect:
         return redirect
@@ -426,6 +433,7 @@ async def projects_page(request: Request, type: str = "", q: str = ""):
         q=q,
         speed=_account_speed(user),
         token_cost=get_setting("tokens_per_url") or "1",
+        chart=submission_chart(user["id"], days),
     )
 
 
@@ -445,6 +453,7 @@ async def archive_page(request: Request):
         q="",
         speed=_account_speed(user),
         token_cost=get_setting("tokens_per_url") or "1",
+        chart=submission_chart(user["id"], 14),
         archived_view=True,
     )
 
@@ -634,6 +643,7 @@ async def add_project_urls(
     request: Request,
     urls: str = Form(""),
     upload: Optional[UploadFile] = File(None),
+    sitemap_url: str = Form(""),
 ):
     user, redirect = _need(request)
     if redirect:
@@ -642,6 +652,10 @@ async def add_project_urls(
     if not project:
         raise HTTPException(404, "Project not found")
     lines = await _lines_from_upload(upload, urls)
+    sitemap_note = ""
+    if sitemap_url.strip():
+        locs, sitemap_note = await _fetch_sitemap(sitemap_url.strip())
+        lines.extend(locs)
     result = add_urls(user, project, lines, "Added from project")
     message = f"Added {result['added']} link(s)."
     if result.get("duplicates"):
@@ -650,6 +664,8 @@ async def add_project_urls(
         message += f" {result['skipped']} line(s) were not URLs."
     if result.get("limit_message"):
         message += " " + result["limit_message"]
+    if sitemap_note:
+        message += " " + sitemap_note
     return _notice(f"/app/projects/{project_id}", message)
 
 
@@ -688,6 +704,9 @@ async def bulk(project_id: int, request: Request):
     elif ids and action == "requeue":
         count = requeue(user["id"], project_id, ids)
         message = f"Queued {count} link(s) again. Process due now to run them within today's speed."
+    elif action == "resubmit_failed":
+        count = resubmit_failed(user["id"], project_id, ids or None)
+        message = f"Re-queued {count} failed or rejected link(s). Process due now to send them again."
     elif ids and action == "check":
         count, error = await check_ids(user["id"], project_id, ids)
         message = error or f"Google SERP check updated {count} link(s). Yandex and Bing stay unknown until you mark them."
@@ -707,6 +726,17 @@ async def bulk(project_id: int, request: Request):
     else:
         message = "Unknown action."
     return _notice(f"/app/projects/{project_id}", message)
+
+
+@app.get("/app/projects/{project_id}/urls/{url_id}/history")
+async def url_history(project_id: int, url_id: int, request: Request):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    history = link_history(user["id"], project_id, url_id)
+    if history is None:
+        raise HTTPException(404, "Link not found")
+    return history
 
 
 @app.get("/app/projects/{project_id}/export.csv")
@@ -1037,7 +1067,20 @@ async def v1_credits(request: Request):
     user = _bearer_user(request)
     if not user:
         raise HTTPException(401, "Send Authorization: Bearer <api key>.")
-    return {"token_balance": user["token_balance"], "daily_speed_cap": user["daily_speed_cap"], "plan": user["plan_name"]}
+    if user.get("unlimited"):
+        return {
+            "unlimited": True,
+            "plan": "VIP",
+            "token_balance": None,
+            "daily_speed_cap": None,
+            "note": "No in-app URL, speed, or token limit. Engine quotas still apply.",
+        }
+    return {
+        "unlimited": False,
+        "token_balance": user["token_balance"],
+        "daily_speed_cap": user["daily_speed_cap"],
+        "plan": user["plan_name"],
+    }
 
 
 @app.get("/api/v1/campaigns")

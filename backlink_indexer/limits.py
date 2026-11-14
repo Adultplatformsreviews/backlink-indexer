@@ -17,13 +17,35 @@ DEFAULT_UNLIMITED = "muhammadzeeshanhaideroffical@gmail.com"
 DAILY_URL_LIMIT = 100
 
 
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
 def unlimited_emails() -> set[str]:
-    raw = os.environ.get("UNLIMITED_EMAILS", DEFAULT_UNLIMITED)
-    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+    raw = os.environ.get("UNLIMITED_EMAILS")
+    if raw is None or not str(raw).strip():
+        raw = DEFAULT_UNLIMITED
+    return {normalize_email(part) for part in str(raw).split(",") if normalize_email(part)}
 
 
 def is_unlimited_email(email: str) -> bool:
-    return (email or "").strip().lower() in unlimited_emails()
+    return normalize_email(email) in unlimited_emails()
+
+
+def operator_email_for_username(username: str) -> str:
+    """Legacy rows stored the operator's name and left email blank.
+
+    A username that merely matches the local part does not win when an email
+    is already stored. Callers must only use this when the email is empty.
+    If two operator addresses share a local part, nothing is guessed.
+    """
+    local = (username or "").strip().lower()
+    if not local or "@" in local:
+        return ""
+    matches = [email for email in unlimited_emails() if email.split("@", 1)[0] == local]
+    if len(matches) == 1:
+        return matches[0]
+    return ""
 
 
 def usage_day() -> str:
@@ -49,7 +71,7 @@ def urls_used_today(user_id: int, day: Optional[str] = None) -> int:
 
 
 def usage_status(user: dict) -> dict:
-    unlimited = is_unlimited_email(user.get("email") or "")
+    unlimited = bool(user.get("unlimited")) or is_unlimited_email(user.get("email") or "")
     used = urls_used_today(user["id"])
     if unlimited:
         return {"unlimited": True, "used": used, "limit": None, "remaining": None, "label": "Unlimited"}

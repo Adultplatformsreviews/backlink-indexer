@@ -2,6 +2,7 @@
 {% block title %}Add project · Backlink Indexer{% endblock %}
 {% block content %}
 <p class="crumb"><a href="/app">Projects</a> / Add project</p>
+<p class="kicker">New campaign</p>
 <h1 class="page-title">Add project</h1>
 <p class="honest">Indexing lists links on your discovery hub. Instant indexing also calls IndexNow and the Google Indexing API, and only for hosts you mark as owned. Indexing check never pretends a page is indexed without a SERP result or your mark.</p>
 <form class="card" method="post" action="/app/projects" enctype="multipart/form-data">
@@ -18,7 +19,12 @@
     </div>
   </div>
   <label class="field">Target domain <input name="target_domain" value="{{ default_target }}" placeholder="example.com"></label>
+  {% if not user.unlimited %}
   <label class="field">Daily pace <input name="daily_speed" type="number" min="1" value="{{ default_speed }}"> <span class="sub">How many links this project asks the queue to handle per day. Engine quotas can still slow that down.</span></label>
+  {% else %}
+  <input type="hidden" name="daily_speed" value="{{ default_speed }}">
+  <p class="sub">Unlimited. This account has no per-project pace, token charge, or daily URL cap. Google, Bing, IndexNow, and Yandex quotas still apply.</p>
+  {% endif %}
   <label class="field">Notes <input name="notes" value="{{ form.notes if form else '' }}"></label>
   <label class="field">Tags <input name="tags" placeholder="guest-post, feet" value="{{ form.tags if form else '' }}"></label>
   <label class="field">Links, one URL per line
@@ -26,7 +32,7 @@
   </label>
   <label class="field">CSV or TXT upload <input type="file" name="upload" accept=".csv,.txt,.tsv,.xml,text/csv,text/plain"></label>
   <label class="field">Sitemap URL <input name="sitemap_url" type="url" placeholder="https://example.com/sitemap.xml"></label>
-  <p class="sub">{% if user.unlimited %}VIP: no daily URL cap.{% else %}{{ usage.label }}. New URLs count toward the daily limit.{% endif %} Duplicates are skipped.</p>
+  <p class="sub">{% if user.unlimited %}Unlimited{% else %}{{ usage.label }}. New URLs count toward the daily limit.{% endif %} Duplicates are skipped.</p>
   <button class="btn red" type="submit">Create project</button>
 </form>
 {% endblock %}

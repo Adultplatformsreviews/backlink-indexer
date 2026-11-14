@@ -1,6 +1,12 @@
 {% extends "layout.html" %}
 {% block title %}Reset password · Backlink Indexer{% endblock %}
 {% block content %}
+<section class="auth-stage">
+<aside class="auth-aside">
+  <p class="kicker">Recovery</p>
+  <h2>A new password, never the old one in an email.</h2>
+  <div class="gold-rule" aria-hidden="true"></div>
+</aside>
 <section class="card auth-card">
   <h1>Reset password</h1>
   {% if mail_ready %}
@@ -13,5 +19,6 @@
   <p class="error">{{ mail_error }} An administrator can set a new password from the users page. Sign-in does not need email.</p>
   {% endif %}
   <p class="sub"><a href="/login">Back to log in</a></p>
+</section>
 </section>
 {% endblock %}

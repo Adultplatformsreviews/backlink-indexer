@@ -9,7 +9,7 @@
       <span class="badge run {{ project.run_status }}">{{ project.run_label }}</span>
     </div>
     <h1 class="page-title" style="margin-bottom:.2rem">{{ project.name }}</h1>
-    <p class="sub">{{ project.target_domain }} · {{ project.sent }} sent of {{ project.total }} · queue {{ project.queued }} · speed {{ project.daily_speed }}/day</p>
+    <p class="sub">{{ project.target_domain }} · {{ project.sent }} sent of {{ project.total }} · queue {{ project.queued }} · {% if user.unlimited %}pace Unlimited{% else %}speed {{ project.daily_speed }}/day{% endif %}</p>
     <p class="sub">Indexed G {{ project.google_indexed }} · Y {{ project.yandex_indexed }} · B {{ project.bing_indexed }}. Accepted submissions G {{ project.google_accepted }} · Y {{ project.yandex_accepted }} · B {{ project.bing_accepted }}.</p>
   </div>
   <div class="side-actions">
@@ -23,18 +23,23 @@
   </div>
 </section>
 <p class="honest">“Indexed” comes only from a SERP check or your manual mark. “Accepted” means Bing, Yandex, or IndexNow took the submission. A submission is never an index confirmation.</p>
-<form class="card" method="post" action="/app/projects/{{ project.id }}/urls" enctype="multipart/form-data">
-  <label class="field">Add links
+<form class="card import-card" method="post" action="/app/projects/{{ project.id }}/urls" enctype="multipart/form-data">
+  <h2>Add links</h2>
+  <p class="sub">{% if user.unlimited %}Unlimited. No daily URL cap, token charge, or per-project pace. Engine quotas still apply.{% else %}{{ usage.label }}. New URLs count toward the daily limit.{% endif %} Duplicates already in this project are skipped.</p>
+  <label class="field">Paste URLs, one per line
     <textarea name="urls" rows="4" placeholder="https://example.com/page"></textarea>
   </label>
-  <label class="field">Or upload CSV / TXT <input type="file" name="upload" accept=".csv,.txt,.tsv,text/csv,text/plain"></label>
-  <button class="btn red" type="submit">Add to project · {{ token_cost }} token each</button>
+  <div class="split">
+    <label class="field">CSV or TXT upload <input type="file" name="upload" accept=".csv,.txt,.tsv,.xml,text/csv,text/plain"></label>
+    <label class="field">Sitemap URL <input name="sitemap_url" type="url" placeholder="https://example.com/sitemap.xml"></label>
+  </div>
+  <button class="btn red" type="submit">Import into this project</button>
 </form>
 <form method="get" class="tabs">
-  {% for key, label in [('all','All'),('queued','Queued'),('sent','Sent'),('indexed','Indexed'),('unknown','Unknown'),('dead','Not live'),('failed','Failed')] %}
+  {% for key, label in [('all','All'),('queued','Queued'),('sent','Sent'),('indexed','Indexed'),('unknown','Unknown'),('dead','Not live'),('failed','Failed'),('rejected','Rejected')] %}
   <a class="tab {{ 'on' if filter == key else '' }}" href="/app/projects/{{ project.id }}?filter={{ key }}&per={{ listing.per }}&q={{ q }}">{{ label }}</a>
   {% endfor %}
-  <span class="search"><input name="q" value="{{ q }}" placeholder="Filter by URL"><input type="hidden" name="filter" value="{{ filter }}"><input type="hidden" name="per" value="{{ listing.per }}"></span>
+  <span class="search"><input name="q" value="{{ q }}" placeholder="Filter by URL" aria-label="Filter by URL"><input type="hidden" name="filter" value="{{ filter }}"><input type="hidden" name="per" value="{{ listing.per }}"><button class="btn" type="submit">Search</button></span>
 </form>
 <form method="post" action="/app/projects/{{ project.id }}/bulk">
   <div class="table-wrap">
@@ -50,6 +55,7 @@
           <th>HTTP</th>
           <th>Checked</th>
           <th>Submitted</th>
+          <th>History</th>
         </tr>
       </thead>
       <tbody>
@@ -66,9 +72,10 @@
           <td>{% if row.http_status %}{{ row.http_status }}{% if row.is_live == 0 %} · dead{% elif row.is_live == 1 %} · live{% endif %}{% else %}—{% endif %}</td>
           <td>{{ fmt_date(row.last_checked_at) }}</td>
           <td>{{ fmt_date(row.last_submitted_at) }}</td>
+          <td><button class="btn history-btn" type="button" data-history="/app/projects/{{ project.id }}/urls/{{ row.id }}/history">History</button></td>
         </tr>
         {% else %}
-        <tr><td colspan="9" class="empty">No links in this filter.</td></tr>
+        <tr><td colspan="10" class="empty">No links in this filter.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -76,6 +83,7 @@
   <div class="chips" style="margin-top:.7rem">
     <select name="action">
       <option value="requeue">Queue selected again</option>
+      <option value="resubmit_failed">Re-submit failed</option>
       <option value="check">Check indexed (Google SERP)</option>
       <option value="mark_google_indexed">Mark Google indexed</option>
       <option value="mark_google_not_indexed">Mark Google not indexed</option>
@@ -90,6 +98,18 @@
     <button class="btn" type="submit">Apply</button>
   </div>
 </form>
+<form method="post" action="/app/projects/{{ project.id }}/bulk" class="inline-form">
+  <input type="hidden" name="action" value="resubmit_failed">
+  <button class="btn" type="submit">Re-submit failed</button>
+</form>
+<dialog class="drawer" id="historyDrawer">
+  <div class="drawer-head">
+    <h2>Submission history</h2>
+    <button class="btn" type="button" id="historyClose">Close</button>
+  </div>
+  <p class="sub" id="historyUrl"></p>
+  <ol id="historyList" class="timeline"></ol>
+</dialog>
 <div class="pager">
   Show by
   {% for n in (5, 10, 25) %}

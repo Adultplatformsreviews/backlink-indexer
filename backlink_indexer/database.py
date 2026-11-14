@@ -546,6 +546,8 @@ _PROJECT_COLUMNS = {
     "use_bing": "INTEGER NOT NULL DEFAULT 1",
     "use_yandex": "INTEGER NOT NULL DEFAULT 1",
     "use_indexnow": "INTEGER NOT NULL DEFAULT 1",
+    "slug": "TEXT NOT NULL DEFAULT ''",
+    "publish_hub": "INTEGER NOT NULL DEFAULT 1",
 }
 
 _URL_COLUMNS = {

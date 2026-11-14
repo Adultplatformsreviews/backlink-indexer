@@ -18,6 +18,7 @@ from .services.quotas import consume as consume_quota
 from .services.quotas import remaining as quota_remaining
 from .services.secrets import setting_or_env
 from .services.precheck import RobotsCache, precheck_url
+from .crawlhub import ping_hub
 from .services.urlutil import host_of, registrable_host
 
 ENGINES = ("google", "yandex", "bing")
@@ -634,6 +635,7 @@ async def run_queue(
     robots = RobotsCache()
     ping: Optional[dict] = None
     touched_users: dict[int, int] = {}
+    touched_urls: dict[int, list[int]] = {}
     async with httpx.AsyncClient(
         follow_redirects=True,
         headers={"User-Agent": USER_AGENT},
@@ -658,6 +660,8 @@ async def run_queue(
                     summary["processed"] += 1
                 elif outcome == "sent":
                     summary["processed"] += 1
+                if outcome in {"sent", "failed", "deferred"}:
+                    touched_urls.setdefault(int(project["id"]), []).append(int(row["id"]))
                 touched_users[project["user_id"]] = touched_users.get(project["user_id"], 0) + (
                     1 if outcome in {"sent", "failed"} else 0
                 )
@@ -665,6 +669,11 @@ async def run_queue(
                 break
         if summary["processed"] and user_id is None and project_id is None:
             ping = await _maybe_ping(client, _public_base())
+        for touched_id, ids in touched_urls.items():
+            try:
+                await ping_hub(client, touched_id, ids, _public_base())
+            except Exception:
+                pass
     for owner_id, count in touched_users.items():
         if not count:
             continue

@@ -603,6 +603,53 @@ def test_engine_selector_and_batch_process(client, monkeypatch):
     assert all(row["google_state"] == "off" for row in sent)
 
 
+def test_crawl_hub_pages_sitemap_and_help(client, monkeypatch):
+    monkeypatch.setattr("backlink_indexer.crawlhub.PAGE_SIZE", 2)
+    signup(client, "hubber", "password1")
+    created = client.post(
+        "/app/projects",
+        data={
+            "name": "Crawl Hub",
+            "project_type": "indexing",
+            "daily_speed": "5",
+            "urls": "\n".join(f"https://example.com/h{i}" for i in range(3)),
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    path = created.headers["location"].split("?")[0]
+    page = client.get("/hub/crawl-hub")
+    assert page.status_code == 200
+    assert "https://example.com/h0" in page.text
+    assert "nofollow" not in page.text
+    assert 'content="index,follow"' in page.text
+    assert "canonical" in page.text
+    assert "updated" in page.text
+    second = client.get("/hub/crawl-hub/page/2")
+    assert second.status_code == 200
+    assert "https://example.com/h2" in second.text
+    sitemap = client.get("/sitemap.xml")
+    assert sitemap.status_code == 200
+    assert "/sitemaps/crawl-hub.xml" in sitemap.text
+    assert "/sitemaps/crawl-hub-links.xml" in sitemap.text
+    pages = client.get("/sitemaps/crawl-hub.xml")
+    assert "/hub/crawl-hub" in pages.text
+    links = client.get("/sitemaps/crawl-hub-links.xml")
+    assert "https://example.com/h0" in links.text
+    feed = client.get("/hub/crawl-hub/feed.xml")
+    assert "<item>" in feed.text
+    robots = client.get("/robots.txt")
+    assert "Sitemap:" in robots.text
+    assert "/sitemap.xml" in robots.text
+    detail = client.get(path)
+    assert "Crawl hub" in detail.text
+    assert "Search Console" in detail.text
+    assert "Published" in detail.text
+    hidden = client.post(path + "/hub", data={}, follow_redirects=False)
+    assert hidden.status_code == 303
+    assert client.get("/hub/crawl-hub").status_code == 404
+
+
 def test_csv_export(client):
     signup(client, "export", "password1")
     created = client.post(

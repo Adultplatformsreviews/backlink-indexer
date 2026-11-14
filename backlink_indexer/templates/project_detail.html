@@ -23,6 +23,19 @@
   </div>
 </section>
 <p class="honest">“Indexed” comes only from a SERP check or your manual mark. “Accepted” means Bing, Yandex, or IndexNow took the submission. A submission is never an index confirmation.</p>
+<section class="card">
+  <h2>Crawl hub</h2>
+  <p>These links are on other people's sites. Google, Bing, and Yandex will not accept a force-submit for a host you do not own. This app lists them on a public page of its own, so a crawler can find them.</p>
+  <p>Verify <a href="{{ verify_url }}">{{ verify_url }}</a> in Google Search Console and Bing Webmaster. Then submit <a href="{{ sitemap_url }}">{{ sitemap_url }}</a>.</p>
+  <p class="sub">This project's hub page: <a href="{{ hub_url }}">{{ hub_url }}</a><br>
+  Hub sitemap: <a href="{{ project_sitemap }}">{{ project_sitemap }}</a><br>
+  Link sitemap: <a href="{{ links_sitemap }}">{{ links_sitemap }}</a></p>
+  <form method="post" action="/app/projects/{{ project.id }}/hub">
+    <input type="hidden" name="publish_hub_set" value="1">
+    <label class="engine-row"><input type="checkbox" name="publish_hub" value="1" {% if project.publish_hub %}checked{% endif %}> <span class="engine-name">Publish to crawl hub</span></label>
+    <button class="btn" type="submit">Save</button>
+  </form>
+</section>
 {% if engine_banner %}<p class="error">{{ engine_banner }}</p>{% endif %}
 <p id="processProgress" class="notice" hidden></p>
 <form class="card" method="post" action="/app/projects/{{ project.id }}/engines">
@@ -66,6 +79,7 @@
           <th>HTTP</th>
           <th>Checked</th>
           <th>Submitted</th>
+          <th>Hub</th>
           <th>History</th>
         </tr>
       </thead>
@@ -83,10 +97,11 @@
           <td>{% if row.http_status %}{{ row.http_status }}{% if row.is_live == 0 %} · dead{% elif row.is_live == 1 %} · live{% endif %}{% else %}—{% endif %}</td>
           <td>{{ fmt_date(row.last_checked_at) }}</td>
           <td>{{ fmt_date(row.last_submitted_at) }}</td>
+          <td>{% if row.hub_href %}<a href="{{ row.hub_href }}">{{ row.hub_status }}</a>{% else %}{{ row.hub_status }}{% endif %}</td>
           <td><button class="btn history-btn" type="button" data-history="/app/projects/{{ project.id }}/urls/{{ row.id }}/history">History</button></td>
         </tr>
         {% else %}
-        <tr><td colspan="10" class="empty">No links in this filter.</td></tr>
+        <tr><td colspan="11" class="empty">No links in this filter.</td></tr>
         {% endfor %}
       </tbody>
     </table>

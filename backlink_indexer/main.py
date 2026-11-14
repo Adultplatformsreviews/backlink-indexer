@@ -52,6 +52,7 @@ from .database import (
     utcnow,
 )
 from .ingest import add_urls, parse_upload, sitemap_locs
+from .crawlhub import annotate_rows, crawl_base, hub_listing, hub_page_path, newest_links, project_by_slug, published_projects
 from .projects import (
     PROJECT_TYPES,
     TYPE_LABELS,
@@ -63,7 +64,9 @@ from .projects import (
     get_project,
     list_projects,
     list_urls,
+    ensure_slug,
     set_engines,
+    set_publish_hub,
     set_run_status,
     set_speed,
     type_counts,
@@ -72,7 +75,7 @@ from .queue import check_ids, mark_engines, requeue, resubmit_failed, run_queue
 from .services import google_indexing, indexnow, websub
 from .services.secrets import setting_or_env
 from .services.urlutil import host_of, registrable_host
-from .ui import current_user, login_redirect, render
+from .ui import current_user, login_redirect, render, templates
 
 ROOT_DIR = __import__("pathlib").Path(__file__).resolve().parent
 
@@ -609,7 +612,10 @@ async def project_detail(project_id: int, request: Request, q: str = "", filter:
     project = get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
+    project = ensure_slug(project)
     listing = list_urls(project_id, q=q, filt=filter, page=page, per=per)
+    annotate_rows(project, listing["urls"])
+    base = crawl_base(str(request.base_url))
     return render(
         request,
         "project_detail.html",
@@ -622,11 +628,25 @@ async def project_detail(project_id: int, request: Request, q: str = "", filter:
         token_cost=get_setting("tokens_per_url") or "1",
         speed=_account_speed(get_user(user["id"]) or user),
         engines=engine_choices(project),
+        hub_url=f"{base}{hub_page_path(project['slug'], 1)}",
+        sitemap_url=f"{base}/sitemap.xml",
+        project_sitemap=f"{base}/sitemaps/{project['slug']}.xml",
+        links_sitemap=f"{base}/sitemaps/{project['slug']}-links.xml",
+        verify_url=base + "/",
         engine_banner="" if any(_configured_map().values()) else (
             "No search engine is configured. Links can still be checked for HTTP status. "
             "Set INDEXNOW_KEY, or Bing, Yandex, and Google keys, before a submission can be accepted."
         ),
     )
+
+
+@app.post("/app/projects/{project_id}/hub")
+async def save_publish_hub(project_id: int, request: Request, publish_hub: str = Form("")):
+    user, redirect = _need(request)
+    if redirect:
+        return redirect
+    error = set_publish_hub(user["id"], project_id, publish_hub == "1")
+    return _notice(f"/app/projects/{project_id}", error or "Crawl hub setting saved.")
 
 
 @app.post("/app/projects/{project_id}/speed")
@@ -1281,12 +1301,85 @@ async def cron_tick(request: Request):
 
 @app.get("/robots.txt")
 async def robots_txt(request: Request):
+    base = crawl_base(str(request.base_url))
     body = (
-        "User-agent: *\nAllow: /hub\nAllow: /hub/\nAllow: /robots.txt\n"
+        "User-agent: *\nAllow: /hub\nAllow: /hub/\nAllow: /sitemap.xml\nAllow: /sitemaps/\nAllow: /robots.txt\n"
         "Disallow: /api/\nDisallow: /app\nDisallow: /static/\n"
-        f"Sitemap: {hub_urls(request)['sitemap']}\n"
+        f"Sitemap: {base}/sitemap.xml\n"
     )
     return PlainTextResponse(body)
+
+
+def _xml_urlset(locs: list[tuple[str, str]]) -> str:
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for loc, lastmod in locs:
+        parts.append("  <url>")
+        parts.append(f"    <loc>{xml_escape(loc)}</loc>")
+        parts.append(f"    <lastmod>{xml_escape((lastmod or '')[:10])}</lastmod>")
+        parts.append("  </url>")
+    parts.append("</urlset>")
+    return "\n".join(parts) + "\n"
+
+
+@app.get("/sitemap.xml")
+async def sitemap_index(request: Request):
+    base = crawl_base(str(request.base_url))
+    today = utcnow()[:10]
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for project in published_projects():
+        for path in (f"/sitemaps/{project['slug']}.xml", f"/sitemaps/{project['slug']}-links.xml"):
+            parts.append("  <sitemap>")
+            parts.append(f"    <loc>{xml_escape(base + path)}</loc>")
+            parts.append(f"    <lastmod>{today}</lastmod>")
+            parts.append("  </sitemap>")
+    parts.append("</sitemapindex>")
+    return Response("\n".join(parts) + "\n", media_type="application/xml")
+
+
+@app.get("/sitemaps/{filename}")
+async def project_sitemap_file(filename: str, request: Request):
+    links = filename.endswith("-links.xml")
+    slug = filename[: -len("-links.xml")] if links else filename[: -len(".xml")] if filename.endswith(".xml") else ""
+    project = project_by_slug(slug)
+    if not project:
+        raise HTTPException(404, "Unknown crawl hub")
+    base = crawl_base(str(request.base_url))
+    if links:
+        rows = get_conn().execute(
+            """SELECT url, updated_at, created_at FROM urls
+               WHERE project_id = ? AND in_hub = 1 ORDER BY id ASC""",
+            (project["id"],),
+        ).fetchall()
+        locs = [(row["url"], row["updated_at"] or row["created_at"] or "") for row in rows]
+    else:
+        listing = hub_listing(project, 1) or {"pages": 1, "updated": utcnow()}
+        locs = []
+        for number in range(1, int(listing["pages"]) + 1):
+            locs.append((base + hub_page_path(project["slug"], number), listing["updated"]))
+    return Response(_xml_urlset(locs), media_type="application/xml")
+
+
+def _hub_context(project: dict, listing: dict, request: Request) -> dict:
+    base = crawl_base(str(request.base_url))
+    page = listing["page"]
+    canonical = base + hub_page_path(project["slug"], page)
+    prev_url = base + hub_page_path(project["slug"], page - 1) if page > 1 else ""
+    next_url = base + hub_page_path(project["slug"], page + 1) if page < listing["pages"] else ""
+    return {
+        "project": project,
+        "listing": listing,
+        "canonical": canonical,
+        "prev_url": prev_url,
+        "next_url": next_url,
+        "feed_url": f"{base}/hub/{project['slug']}/feed.xml",
+        "updated": (listing["updated"] or "")[:10],
+    }
 
 
 @app.get("/hub")
@@ -1378,6 +1471,57 @@ async def hub_atom(request: Request):
         + "</feed>"
     )
     return Response(xml, media_type="application/atom+xml")
+
+
+@app.get("/hub/{slug}/feed.xml")
+async def project_feed(slug: str, request: Request):
+    project = project_by_slug(slug)
+    if not project:
+        raise HTTPException(404, "Unknown crawl hub")
+    base = crawl_base(str(request.base_url))
+    page = base + hub_page_path(project["slug"], 1)
+    items = []
+    for row in newest_links(project["id"]):
+        items.append(
+            "<item>"
+            f"<title>{xml_escape(row['url'])}</title>"
+            f"<link>{xml_escape(row['url'])}</link>"
+            f"<guid isPermaLink=\"true\">{xml_escape(row['url'])}</guid>"
+            "<description>Listed on the crawl hub for discovery.</description>"
+            "</item>"
+        )
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel>'
+        f"<title>{xml_escape(project['name'])} crawl hub</title>"
+        f"<link>{xml_escape(page)}</link>"
+        "<description>Newest third-party links listed for crawl discovery.</description>"
+        + "".join(items)
+        + "</channel></rss>"
+    )
+    return Response(xml, media_type="application/rss+xml")
+
+
+@app.get("/hub/{slug}/page/{page}")
+async def project_hub_page(slug: str, page: int, request: Request):
+    project = project_by_slug(slug)
+    if not project:
+        raise HTTPException(404, "Unknown crawl hub")
+    listing = hub_listing(project, page)
+    if listing is None:
+        raise HTTPException(404, "That hub page does not exist")
+    return templates.TemplateResponse(request, "crawl_hub.html", _hub_context(project, listing, request))
+
+
+@app.get("/hub/{slug}")
+async def project_hub(slug: str, request: Request):
+    project = project_by_slug(slug)
+    if not project:
+        raise HTTPException(404, "Unknown crawl hub")
+    listing = hub_listing(project, 1)
+    if listing is None:
+        raise HTTPException(404, "That hub page does not exist")
+    return templates.TemplateResponse(request, "crawl_hub.html", _hub_context(project, listing, request))
 
 
 @app.get("/{key}.txt")

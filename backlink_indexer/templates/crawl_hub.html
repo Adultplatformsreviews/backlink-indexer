@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ project.name }} · Crawl hub</title>
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="{{ canonical }}">
+  {% if listing.page > 1 %}<link rel="prev" href="{{ prev_url }}">{% endif %}
+  {% if listing.page < listing.pages %}<link rel="next" href="{{ next_url }}">{% endif %}
+  <link rel="alternate" type="application/rss+xml" title="RSS" href="{{ feed_url }}">
+  <style>
+    body { margin: 0; font-family: Georgia, "Times New Roman", serif; background: #fff; color: #1a1a2e; line-height: 1.5; }
+    main { max-width: 760px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+    h1 { font-size: 2rem; margin: 0 0 .4rem; }
+    p, li { font-family: "Segoe UI", sans-serif; }
+    .meta { color: #4c4668; font-size: .95rem; }
+    ol { padding-left: 1.2rem; }
+    li { margin: 0 0 .65rem; }
+    a { color: #5b21b6; }
+    nav a { margin-right: .8rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{{ project.name }}</h1>
+    <p class="meta">Crawl hub · {{ listing.total }} links · page {{ listing.page }} of {{ listing.pages }} · updated {{ updated }}</p>
+    <p>These are third-party pages listed so search engines can discover them. A listing is not an index confirmation.</p>
+    {% if listing.urls %}
+    <ol>
+      {% for row in listing.urls %}
+      <li><a href="{{ row.url }}">{{ row.url }}</a></li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p>No links are published on this page yet.</p>
+    {% endif %}
+    <nav>
+      {% if listing.page > 1 %}<a href="{{ prev_url }}">Previous</a>{% endif %}
+      {% if listing.page < listing.pages %}<a href="{{ next_url }}">Next</a>{% endif %}
+      <a href="{{ feed_url }}">Feed</a>
+    </nav>
+  </main>
+</body>
+</html>

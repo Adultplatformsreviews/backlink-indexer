@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from .database import get_conn, insert_id, tx, utcnow
@@ -129,6 +130,33 @@ def list_projects(
     return [_decorate(row) for row in rows]
 
 
+def slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")[:48]
+    return slug or "project"
+
+
+def unique_slug(name: str, project_id: Optional[int] = None) -> str:
+    base = slugify(name)
+    slug = base
+    number = 2
+    while True:
+        row = get_conn().execute("SELECT id FROM projects WHERE slug = ?", (slug,)).fetchone()
+        if not row or (project_id is not None and int(row["id"]) == int(project_id)):
+            return slug
+        slug = f"{base}-{number}"[:60]
+        number += 1
+
+
+def ensure_slug(project: dict) -> dict:
+    if project.get("slug"):
+        return project
+    slug = unique_slug(project.get("name") or "project", project["id"])
+    with tx() as conn:
+        conn.execute("UPDATE projects SET slug = ? WHERE id = ?", (slug, project["id"]))
+    project["slug"] = slug
+    return project
+
+
 def create_project(
     user: dict,
     *,
@@ -156,23 +184,37 @@ def create_project(
     target_domain = (target_domain or "").strip()
     flags = engines or {}
     now = utcnow()
+    slug = unique_slug(name)
     with tx() as conn:
         project_id = insert_id(
             conn,
             """INSERT INTO projects
                (user_id, name, target_domain, include_subdomains, project_type,
                 daily_speed, run_status, sent_today, sent_on, created_at, updated_at,
-                notes, tags, use_google, use_bing, use_yandex, use_indexnow)
-               VALUES (?, ?, ?, 1, ?, ?, 'running', 0, '', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                notes, tags, use_google, use_bing, use_yandex, use_indexnow, slug, publish_hub)
+               VALUES (?, ?, ?, 1, ?, ?, 'running', 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
             (
                 user["id"], name, target_domain, project_type, daily_speed, now, now, notes, tags,
                 int(flags.get("use_google", 1)),
                 int(flags.get("use_bing", 1)),
                 int(flags.get("use_yandex", 1)),
                 int(flags.get("use_indexnow", 1)),
+                slug,
             ),
         )
     return get_project(project_id, user["id"]), ""
+
+
+def set_publish_hub(user_id: int, project_id: int, publish: bool) -> str:
+    project = get_project(project_id, user_id)
+    if not project:
+        return "Project not found."
+    with tx() as conn:
+        conn.execute(
+            "UPDATE projects SET publish_hub = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            (1 if publish else 0, utcnow(), project_id, user_id),
+        )
+    return ""
 
 
 def set_engines(user_id: int, project_id: int, engines: dict) -> str:

@@ -32,7 +32,7 @@ def client():
     with TestClient(app) as test_client:
         conn = get_conn()
         for table in (
-            "events", "serp_cache", "hub_pages", "hub_domains", "connections",
+            "cron_leases", "events", "serp_cache", "hub_pages", "hub_domains", "connections",
             "submission_log", "urls", "batches", "notifications", "tickets",
             "api_keys", "sessions", "projects", "owned_hosts", "daily_usage",
             "login_codes", "users",
@@ -506,6 +506,53 @@ def test_mcp_lists_tools_and_reads_credits(client):
     )
     assert credits.status_code == 200
     assert credits.json()["result"]["structuredContent"]["refunded_urls"] == 0
+
+
+def test_vercel_crons_run_at_most_once_per_day():
+    import json
+    from pathlib import Path
+
+    data = json.loads(Path("vercel.json").read_text(encoding="utf-8"))
+    schedules = [item["schedule"] for item in data["crons"]]
+    assert schedules
+    for schedule in schedules:
+        minute, hour, day, month, weekday = schedule.split()
+        assert minute.isdigit() and hour.isdigit()
+        assert "/" not in schedule
+        assert day == month == weekday == "*"
+
+
+def test_lease_blocks_overlap_until_it_expires():
+    from backlink_indexer.cronlock import acquire_lease, release_lease
+
+    owner = acquire_lease("precheck", 60)
+    assert owner
+    assert acquire_lease("precheck", 60) is None
+    with tx() as conn:
+        conn.execute(
+            "UPDATE cron_leases SET expires_at = ? WHERE name = ?",
+            ("2000-01-01T00:00:00Z", "precheck"),
+        )
+    close_conn()
+    renewed = acquire_lease("precheck", 30)
+    assert renewed
+    release_lease("precheck", renewed)
+    assert acquire_lease("precheck", 30)
+
+
+def test_overlapping_precheck_returns_ok_without_running(client, monkeypatch):
+    from backlink_indexer.cronlock import acquire_lease, release_lease
+
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    owner = acquire_lease("precheck", 60)
+    assert owner
+    close_conn()
+    response = client.post("/api/cron/precheck", headers={"Authorization": "Bearer cron-secret"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["skipped"] is True
+    release_lease("precheck", owner)
 
 
 def test_roundtrip_encryption_does_not_store_plaintext():

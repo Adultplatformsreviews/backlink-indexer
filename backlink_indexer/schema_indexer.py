@@ -128,5 +128,12 @@ def apply_indexer_schema(conn) -> None:
     for statement in _tables(conn.postgres):
         conn.execute(statement)
     _add_columns(conn, "urls", URL_COLUMNS)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS cron_leases (
+            name TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )"""
+    )
     for statement in _INDEXES:
         conn.execute(statement)

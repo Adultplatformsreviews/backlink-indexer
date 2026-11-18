@@ -120,10 +120,14 @@ async def precheck_ids(url_ids: list[int], client: Optional[httpx.AsyncClient] =
         return {"accepted": accepted, "not_sendable": not_sendable, "skipped_duplicates": skipped}
     owns_client = client is None
     if client is None:
-        client = httpx.AsyncClient(follow_redirects=True, timeout=12)
+        client = httpx.AsyncClient(follow_redirects=True, timeout=4)
     paced = PacedClient(client)
     started = time.monotonic()
-    budget = float(os.environ.get("PRECHECK_BUDGET_SECONDS", "20"))
+    try:
+        budget = float(os.environ.get("PRECHECK_BUDGET_SECONDS", "8"))
+    except ValueError:
+        budget = 8.0
+    budget = max(3.0, min(9.0, budget))
     try:
         placeholders = ",".join("?" * len(url_ids))
         rows = get_conn().execute(
@@ -247,7 +251,7 @@ async def run_precheck() -> dict[str, Any]:
     rows = get_conn().execute(
         """SELECT id FROM urls
            WHERE status = 'queued' AND (precheck_json IS NULL OR precheck_json = '')
-           ORDER BY id LIMIT 8"""
+           ORDER BY id LIMIT 4"""
     ).fetchall()
     ids = [int(row["id"]) for row in rows]
     result = await precheck_ids(ids)
@@ -440,9 +444,11 @@ async def run_drip(client: Optional[httpx.AsyncClient] = None) -> dict[str, Any]
     network.reset_quotas_if_needed()
     owns = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=30)
+        client = httpx.AsyncClient(timeout=8)
     created = 0
     pushed = 0
+    deadline = time.monotonic() + _job_seconds()
+    page_cap = 2
     try:
         domains = [domain for domain in network.list_domains() if domain.get("indexnow_verified_at")]
         try:
@@ -450,8 +456,12 @@ async def run_drip(client: Optional[httpx.AsyncClient] = None) -> dict[str, Any]
         except ValueError:
             cursor = 0
         base = _public_base()
+        stop = False
         for _project_id, rows in _due_external().items():
             for chunk in _chunks(rows, network.PAGE_URLS):
+                if created >= page_cap or time.monotonic() >= deadline:
+                    stop = True
+                    break
                 domain = _pick_domain(domains, cursor)
                 cursor += 1
                 page = network.create_page(domain, [int(row["id"]) for row in chunk])
@@ -459,9 +469,13 @@ async def run_drip(client: Optional[httpx.AsyncClient] = None) -> dict[str, Any]
                 await _push_page(client, page, domain, target)
                 created += 1
                 pushed += 1
+            if stop:
+                break
         set_setting("hub_rr_cursor", str(cursor))
-        await _repush(client, base)
-        await _submit_own(client)
+        if time.monotonic() < deadline:
+            await _repush(client, base, limit=1)
+        if time.monotonic() < deadline:
+            await _submit_own(client, limit=4)
     finally:
         if owns:
             await client.aclose()
@@ -482,13 +496,25 @@ def _pick_domain(domains: list[dict], cursor: int) -> Optional[dict]:
     return None
 
 
-async def _repush(client: httpx.AsyncClient, base: str) -> None:
+def _job_seconds() -> float:
+    """Stay inside a Hobby function's default 10 second limit."""
+    try:
+        budget = float(os.environ.get("CRON_BUDGET_SECONDS", "8"))
+    except ValueError:
+        budget = 8.0
+    return max(3.0, min(9.0, budget))
+
+
+async def _repush(client: httpx.AsyncClient, base: str, limit: int = 1) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
     pages = get_conn().execute(
         """SELECT * FROM hub_pages
            WHERE pushes_count < 2 AND pushes_count >= 0"""
     ).fetchall()
+    sent = 0
     for page in pages:
+        if sent >= limit:
+            break
         page = dict(page)
         count = int(page.get("pushes_count") or 0)
         if count == 0:
@@ -516,9 +542,10 @@ async def _repush(client: httpx.AsyncClient, base: str) -> None:
         domain = network.domain_by_id(page["hub_domain_id"]) if page.get("hub_domain_id") else None
         target = network.page_http_url(domain, page["slug"], base)
         await _push_page(client, page, domain, target)
+        sent += 1
 
 
-async def _submit_own(client: httpx.AsyncClient) -> None:
+async def _submit_own(client: httpx.AsyncClient, limit: int = 4) -> None:
     rows = get_conn().execute(
         """SELECT u.*, p.user_id, p.daily_speed
            FROM urls u JOIN projects p ON p.id = u.project_id
@@ -527,7 +554,8 @@ async def _submit_own(client: httpx.AsyncClient) -> None:
              AND u.kind = 'own'
              AND u.status = 'queued'
              AND u.precheck_json != ''
-           ORDER BY u.id LIMIT 20"""
+           ORDER BY u.id LIMIT ?""",
+        (max(1, limit),),
     ).fetchall()
     room: dict[int, int] = {}
     for row in rows:
@@ -713,15 +741,18 @@ async def run_serp_checks(client: Optional[httpx.AsyncClient] = None) -> dict[st
         """SELECT id, url FROM urls
            WHERE next_check_at != '' AND next_check_at <= ?
              AND status NOT IN ('not_sendable', 'indexed', 'not_indexed_28d')
-           ORDER BY next_check_at LIMIT 8""",
+           ORDER BY next_check_at LIMIT 3""",
         (utcnow(),),
     ).fetchall()
     owns = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=30)
+        client = httpx.AsyncClient(timeout=5)
     checked = 0
+    deadline = time.monotonic() + _job_seconds()
     try:
         for row in rows:
+            if time.monotonic() >= deadline:
+                break
             if serp_remaining()[0] <= 0 and not _cache_get("google|" + serp.build_query(row["url"])):
                 break
             results = await check_url_serps(client, row["url"])
@@ -738,14 +769,17 @@ async def run_inspection(client: Optional[httpx.AsyncClient] = None) -> dict[str
         """SELECT u.*, p.user_id FROM urls u
            JOIN projects p ON p.id = u.project_id
            WHERE u.kind = 'own' AND u.status IN ('submitted', 'discovered')
-           ORDER BY u.id LIMIT 10"""
+           ORDER BY u.id LIMIT 3"""
     ).fetchall()
     owns = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=30)
+        client = httpx.AsyncClient(timeout=5)
     checked = 0
+    deadline = time.monotonic() + _job_seconds()
     try:
         for row in rows:
+            if time.monotonic() >= deadline:
+                break
             user_id = int(row["user_id"])
             config = await gsc.authorized_config(client, user_id)
             prop = gsc.matching_property(row.get("host") or host_of(row["url"]), config.get("properties") or [])

@@ -1,0 +1,151 @@
+# Frequent indexer runs. Vercel Hobby can only fire each cron once per day,
+# so this workflow is the 15-minute and hourly scheduler.
+# Scheduled workflows run from the default branch after this file is merged.
+name: Indexer cron
+
+on:
+  schedule:
+    # Pre-check. At minute 0 GitHub also starts the hourly schedule below.
+    - cron: "*/15 * * * *"
+    # Drip, SERP checks, and Search Console inspection.
+    - cron: "0 * * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Which cron to run
+        type: choice
+        default: all-due
+        options:
+          - all-due
+          - precheck
+          - drip
+          - serp-check
+          - inspection-poll
+          - quota-reset
+
+concurrency:
+  group: indexer-cron-${{ github.event.schedule || github.event.inputs.job || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  precheck:
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '*/15 * * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.job == 'precheck' || inputs.job == 'all-due'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/precheck
+        env:
+          APP_BASE_URL_VAR: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_PATH: /api/cron/precheck
+        run: bash -s <<'EOF'
+set -euo pipefail
+BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+BASE="${BASE%/}"
+if [ -z "${CRON_SECRET:-}" ]; then
+  echo "Set the CRON_SECRET repository secret." >&2
+  exit 1
+fi
+curl --fail --silent --show-error --max-time 20 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  "${BASE}${CRON_PATH}"
+echo
+EOF
+
+  hourly:
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 * * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.job == 'drip' || inputs.job == 'serp-check' || inputs.job == 'inspection-poll' || inputs.job == 'all-due'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/drip
+        if: github.event_name == 'schedule' || inputs.job == 'drip' || inputs.job == 'all-due'
+        env:
+          APP_BASE_URL_VAR: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_PATH: /api/cron/drip
+        run: bash -s <<'EOF'
+set -euo pipefail
+BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+BASE="${BASE%/}"
+if [ -z "${CRON_SECRET:-}" ]; then
+  echo "Set the CRON_SECRET repository secret." >&2
+  exit 1
+fi
+curl --fail --silent --show-error --max-time 20 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  "${BASE}${CRON_PATH}"
+echo
+EOF
+      - name: POST /api/cron/serp-check
+        if: github.event_name == 'schedule' || inputs.job == 'serp-check' || inputs.job == 'all-due'
+        env:
+          APP_BASE_URL_VAR: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_PATH: /api/cron/serp-check
+        run: bash -s <<'EOF'
+set -euo pipefail
+BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+BASE="${BASE%/}"
+if [ -z "${CRON_SECRET:-}" ]; then
+  echo "Set the CRON_SECRET repository secret." >&2
+  exit 1
+fi
+curl --fail --silent --show-error --max-time 20 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  "${BASE}${CRON_PATH}"
+echo
+EOF
+      - name: POST /api/cron/inspection-poll
+        if: github.event_name == 'schedule' || inputs.job == 'inspection-poll' || inputs.job == 'all-due'
+        env:
+          APP_BASE_URL_VAR: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_PATH: /api/cron/inspection-poll
+        run: bash -s <<'EOF'
+set -euo pipefail
+BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+BASE="${BASE%/}"
+if [ -z "${CRON_SECRET:-}" ]; then
+  echo "Set the CRON_SECRET repository secret." >&2
+  exit 1
+fi
+curl --fail --silent --show-error --max-time 20 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  "${BASE}${CRON_PATH}"
+echo
+EOF
+
+  quota-reset:
+    if: github.event_name == 'workflow_dispatch' && inputs.job == 'quota-reset'
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/quota-reset
+        env:
+          APP_BASE_URL_VAR: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_PATH: /api/cron/quota-reset
+        run: bash -s <<'EOF'
+set -euo pipefail
+BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+BASE="${BASE%/}"
+if [ -z "${CRON_SECRET:-}" ]; then
+  echo "Set the CRON_SECRET repository secret." >&2
+  exit 1
+fi
+curl --fail --silent --show-error --max-time 20 \
+  -X POST \
+  -H "Authorization: Bearer ${CRON_SECRET}" \
+  "${BASE}${CRON_PATH}"
+echo
+EOF

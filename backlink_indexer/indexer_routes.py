@@ -11,6 +11,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 from . import network
 from .credits import summary_for_user
 from .database import get_conn, get_setting, utcnow
+from .cronlock import acquire_lease, release_lease
 from .engine import (
     GOOGLE_PUSH_WARNING,
     campaign_report,
@@ -302,35 +303,42 @@ def register(app) -> None:
             pasted=urls,
         )
 
-    @app.api_route("/api/cron/precheck", methods=["GET", "POST"])
-    async def cron_precheck(request: Request):
+    async def _locked(request: Request, name: str, runner):
         if not _cron_ok(request):
             raise HTTPException(401, "Cron authentication failed.")
-        return {"ok": True, **(await run_precheck())}
+        token = acquire_lease(name, 40)
+        if not token:
+            return {"ok": True, "skipped": True, "reason": "Another run still holds this cron lease."}
+        try:
+            result = runner()
+            if hasattr(result, "__await__"):
+                result = await result
+            body = {"ok": True, "skipped": False}
+            if isinstance(result, dict):
+                body.update(result)
+            return body
+        finally:
+            release_lease(name, token)
+
+    @app.api_route("/api/cron/precheck", methods=["GET", "POST"])
+    async def cron_precheck(request: Request):
+        return await _locked(request, "precheck", run_precheck)
 
     @app.api_route("/api/cron/drip", methods=["GET", "POST"])
     async def cron_drip(request: Request):
-        if not _cron_ok(request):
-            raise HTTPException(401, "Cron authentication failed.")
-        return {"ok": True, **(await run_drip())}
+        return await _locked(request, "drip", run_drip)
 
     @app.api_route("/api/cron/serp-check", methods=["GET", "POST"])
     async def cron_serp(request: Request):
-        if not _cron_ok(request):
-            raise HTTPException(401, "Cron authentication failed.")
-        return {"ok": True, **(await run_serp_checks())}
+        return await _locked(request, "serp-check", run_serp_checks)
 
     @app.api_route("/api/cron/inspection-poll", methods=["GET", "POST"])
     async def cron_inspection(request: Request):
-        if not _cron_ok(request):
-            raise HTTPException(401, "Cron authentication failed.")
-        return {"ok": True, **(await run_inspection())}
+        return await _locked(request, "inspection-poll", run_inspection)
 
     @app.api_route("/api/cron/quota-reset", methods=["GET", "POST"])
     async def cron_quota(request: Request):
-        if not _cron_ok(request):
-            raise HTTPException(401, "Cron authentication failed.")
-        return {"ok": True, **run_quota_reset()}
+        return await _locked(request, "quota-reset", run_quota_reset)
 
     @app.get("/api/v1/campaigns/{project_id}/urls")
     async def v1_url_list(project_id: int, request: Request, status: str = "", page: int = 1, per: int = 50):

@@ -33,9 +33,37 @@ Schema changes are applied automatically the first time the process opens the da
 
 Optional: `INDEXER_HOST_INTERVAL` (seconds between pre-check requests to one host, default 1), `PRECHECK_BUDGET_SECONDS`, `INDEXER_SKIP_LIVE_PRECHECK=1` (tests only).
 
-### Cron and the Vercel Hobby plan
+### Cron on the Vercel Hobby plan
 
-`vercel.json` schedules pre-check every 15 minutes, drip / SERP / inspection hourly, and quota reset daily, plus the existing daily queue tick. **Vercel Hobby only allows cron jobs that run once per day** (and a small number of them). Hourly and 15-minute schedules need **Pro**. On Hobby, change those paths to a daily schedule or the deployment will be rejected. The routes themselves are safe to call more often when the plan allows it.
+Hobby allows each Vercel cron to run **once per day** (up to 100 jobs). `vercel.json` only uses daily schedules, so a Hobby deploy is not rejected:
+
+| Path | When (UTC) | Role |
+| --- | --- | --- |
+| `/api/cron/quota-reset` | 00:10 | Reset daily quotas |
+| `/api/cron/tick` | 05:00 | Existing submission queue |
+| `/api/cron/precheck` | 06:20 | One bounded pre-check batch |
+| `/api/cron/drip` | 06:40 | One bounded hub-page batch |
+| `/api/cron/serp-check` | 07:00 | One bounded SERP batch |
+| `/api/cron/inspection-poll` | 07:20 | One bounded inspection batch |
+
+Hobby invokes a daily job sometime in that hour, not at the exact minute. These daily calls are a safety net. The frequent schedule is GitHub Actions.
+
+`.github/workflows/indexer-cron.yml` calls:
+
+- `/api/cron/precheck` every 15 minutes
+- `/api/cron/drip`, `/api/cron/serp-check`, and `/api/cron/inspection-poll` every hour
+
+Each call is `POST` with `Authorization: Bearer $CRON_SECRET`, `curl --fail`, and a 20 second timeout. You can also run it by hand from the Actions tab (`workflow_dispatch`).
+
+Setup after this file is on the default branch (scheduled workflows only run from the default branch):
+
+1. In the GitHub repo, add a secret named `CRON_SECRET` with the same value as the Vercel `CRON_SECRET` environment variable.
+2. Optionally set `APP_BASE_URL` as a repository **variable** or **secret**. If both are empty, the workflow uses `https://backlink-indexer-zeta.vercel.app`.
+3. Confirm the workflow is enabled under Actions. GitHub may delay a scheduled run, and it **disables scheduled workflows after 60 days without a commit** on the repository. A `workflow_dispatch` run or any new commit turns them back on.
+
+Each route takes a short database lease. A second caller that overlaps, or a run that starts while the previous one is still inside its 40 second lease, gets HTTP 200 and `"skipped": true` instead of doing the work twice. If a run is late or skipped, the next one continues from rows that are still due. A single invocation only processes a small batch and stops within about 8 seconds so it stays inside Hobby’s function time limit.
+
+[cron-job.org](https://cron-job.org) is a free alternative to GitHub’s scheduler. Point a job at the same paths, send the same Bearer header, and use a 20 second timeout. Keep the Vercel daily crons as the backup.
 
 Reports count confirmed indexed URLs only. They never guess.
 

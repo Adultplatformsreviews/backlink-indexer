@@ -1434,9 +1434,22 @@ async def v1_urls(project_id: int, request: Request):
 async def cron_tick(request: Request):
     if not _cron_ok(request):
         raise HTTPException(401, "Cron authentication failed.")
-    result = await run_queue()
-    report = bootstrap_db()
-    return {"ok": True, **{k: v for k, v in result.items() if k != "ping"}, "persistent_db": report["persistent_db"]}
+    from .cronlock import acquire_lease, release_lease
+
+    token = acquire_lease("tick", 40)
+    if not token:
+        return {"ok": True, "skipped": True, "reason": "Another run still holds this cron lease."}
+    try:
+        result = await run_queue()
+        report = bootstrap_db()
+        return {
+            "ok": True,
+            "skipped": False,
+            **{k: v for k, v in result.items() if k != "ping"},
+            "persistent_db": report["persistent_db"],
+        }
+    finally:
+        release_lease("tick", token)
 
 
 # ---------------------------------------------------------------------------

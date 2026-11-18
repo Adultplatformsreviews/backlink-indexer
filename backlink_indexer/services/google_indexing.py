@@ -71,7 +71,7 @@ async def publish_notification(
             INDEXING_ENDPOINT,
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
             json={"url": url, "type": notification_type},
-            timeout=30,
+            timeout=8,
         )
     except Exception as exc:
         return {"ok": False, "status": None, "detail": f"Google Indexing API request failed: {exc}"}

@@ -71,7 +71,7 @@ async def submit(
         resp = await client.post(
             endpoint,
             json=payload,
-            timeout=30,
+            timeout=8,
             headers={"User-Agent": USER_AGENT, "Content-Type": "application/json"},
         )
     except Exception as exc:

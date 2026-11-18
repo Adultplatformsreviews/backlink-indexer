@@ -674,6 +674,7 @@ async def run_queue(
         "projects": 0,
         "deferred": 0,
         "stopped_for_time": False,
+        "errors": [],
     }
     owned = _owned_hosts()
     robots = RobotsCache()
@@ -750,7 +751,19 @@ async def run_queue(
                     summary["stopped_for_time"] = True
                     summary["deferred"] += 1
                     break
-                outcome = await _process_row(client, row, project, owned, robots)
+                try:
+                    outcome = await _process_row(client, row, project, owned, robots)
+                except Exception as exc:
+                    try:
+                        get_conn().rollback()
+                    except Exception:
+                        pass
+                    summary["errors"].append(
+                        {"url_id": int(row["id"]), "error": f"{type(exc).__name__}: {exc}"[:500]}
+                    )
+                    summary["failed"] += 1
+                    summary["processed"] += 1
+                    continue
                 if outcome == "failed":
                     summary["failed"] += 1
                     summary["processed"] += 1

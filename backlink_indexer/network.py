@@ -304,18 +304,33 @@ def intro_text(slug: str, hostname: str, count: int) -> str:
     return " ".join((openings[seed % 3], middles[(seed // 3) % 3], closes[(seed // 9) % 3]))
 
 
+def _slug_taken(domain_id: Optional[int], slug: str) -> bool:
+    """True when this slug is already used on the same hub domain.
+
+    A fallback page has no hub domain. Postgres cannot infer a type for a
+    parameter that appears only in `IS NULL`, so that case must not bind NULL.
+    """
+    if domain_id is None:
+        row = get_conn().execute(
+            "SELECT id FROM hub_pages WHERE slug = ? AND hub_domain_id IS NULL",
+            (slug,),
+        ).fetchone()
+    else:
+        row = get_conn().execute(
+            "SELECT id FROM hub_pages WHERE slug = ? AND hub_domain_id = ?",
+            (slug, int(domain_id)),
+        ).fetchone()
+    return row is not None
+
+
 def _unique_slug(domain_id: Optional[int]) -> str:
     for _ in range(8):
         slug = secrets.token_hex(4)
-        row = get_conn().execute(
-            """SELECT id FROM hub_pages
-               WHERE slug = ? AND (
-                    (hub_domain_id IS NULL AND ? IS NULL) OR hub_domain_id = ?
-               )""",
-            (slug, domain_id, domain_id),
-        ).fetchone()
-        if not row:
+        if not _slug_taken(domain_id, slug):
             return slug
+    slug = secrets.token_hex(8)
+    if not _slug_taken(domain_id, slug):
+        return slug
     return secrets.token_hex(8)
 
 

@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -1442,12 +1442,29 @@ async def cron_tick(request: Request):
     try:
         result = await run_queue()
         report = bootstrap_db()
-        return {
+        body = {
             "ok": True,
             "skipped": False,
+            "errors": [],
             **{k: v for k, v in result.items() if k != "ping"},
             "persistent_db": report["persistent_db"],
         }
+        if body.get("errors"):
+            body["ok"] = False
+            return JSONResponse(status_code=500, content=body)
+        return body
+    except HTTPException:
+        raise
+    except Exception as exc:
+        try:
+            get_conn().rollback()
+        except Exception:
+            pass
+        message = f"{type(exc).__name__}: {exc}"[:500]
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "skipped": False, "error": message, "errors": [{"error": message}]},
+        )
     finally:
         release_lease("tick", token)
 

@@ -559,3 +559,167 @@ def test_roundtrip_encryption_does_not_store_plaintext():
     token = encrypt_text('{"private_key":"secret-key"}')
     assert "secret-key" not in token
     assert "secret-key" in decrypt_text(token)
+
+
+def _queue_external(conn, url: str, normalized: str) -> None:
+    conn.execute(
+        """UPDATE urls
+           SET kind = 'external', status = 'queued', precheck_json = ?,
+               normalized_url = ?, host = 'www.branle-entre-potes.com', hub_page_id = NULL
+           WHERE url = ?""",
+        ('{"http_status": 200}', normalized, url),
+    )
+
+
+def test_drip_publishes_prechecked_external_without_hub_domain(client, monkeypatch):
+    """No hub domain and no IndexNow key still publishes the fallback /l/<slug> page."""
+    monkeypatch.delenv("INDEXNOW_KEY", raising=False)
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    set_setting("indexnow_key", "")
+    signup(client, "fallback", "password1")
+    original = "https://www.branle-entre-potes.com/forum/viewtopic.php?f=5&t=2916&p=89166"
+    normalized = "https://www.branle-entre-potes.com/forums/sujet/1210?page=1"
+    created = client.post(
+        "/app/projects",
+        data={"name": "Project 3", "project_type": "indexing", "daily_speed": "10", "urls": original},
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    empty = client.post("/api/cron/drip", headers={"Authorization": "Bearer cron-secret"})
+    assert empty.status_code == 200
+    assert empty.json()["pages"] == 0
+    assert empty.json()["ok"] is True
+    with tx() as conn:
+        _queue_external(conn, original, normalized)
+    close_conn()
+    response = client.post("/api/cron/drip", headers={"Authorization": "Bearer cron-secret"})
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["ok"] is True
+    assert body["pages"] == 1
+    assert body["errors"] == []
+    row = get_conn().execute(
+        "SELECT id, status, hub_page_id FROM urls WHERE url = ?",
+        (original,),
+    ).fetchone()
+    page = get_conn().execute(
+        "SELECT slug, hub_domain_id FROM hub_pages WHERE id = ?",
+        (row["hub_page_id"],),
+    ).fetchone()
+    event = get_conn().execute(
+        "SELECT payload_json FROM events WHERE type = 'indexnow_push' AND url_id = ?",
+        (row["id"],),
+    ).fetchone()
+    close_conn()
+    assert row["status"] == "submitted"
+    assert page["hub_domain_id"] is None
+    assert page["slug"]
+    assert "Fallback hub has no IndexNow key." in event["payload_json"]
+    shown = client.get(f"/l/{page['slug']}")
+    assert shown.status_code == 200
+    assert "viewtopic.php?f=5&amp;t=2916&amp;p=89166" in shown.text
+
+
+def test_fallback_slug_skips_a_page_that_already_uses_it(client, monkeypatch):
+    monkeypatch.delenv("INDEXNOW_KEY", raising=False)
+    set_setting("indexnow_key", "")
+    signup(client, "slug", "password1")
+    original = "https://www.branle-entre-potes.com/forum/viewtopic.php?f=5&t=2916&p=89166"
+    client.post(
+        "/app/projects",
+        data={"name": "Slug", "project_type": "indexing", "daily_speed": "5", "urls": original},
+        follow_redirects=False,
+    )
+    with tx() as conn:
+        _queue_external(conn, original, "https://www.branle-entre-potes.com/forums/sujet/1210?page=1")
+        conn.execute(
+            """INSERT INTO hub_pages
+               (hub_domain_id, slug, url_ids_json, intro_text, pushes_count, last_pushed_at, bot_hits_json, created_at)
+               VALUES (NULL, 'aaaaaaaa', '[]', 'Existing page.', 0, '', '{}', ?)""",
+            (utcnow(),),
+        )
+    close_conn()
+    slugs = iter(("aaaaaaaa", "bbbbbbbb"))
+    monkeypatch.setattr("backlink_indexer.network.secrets.token_hex", lambda n=16: next(slugs))
+
+    async def run():
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, text="ok"))
+        async with httpx.AsyncClient(transport=transport) as http:
+            return await run_drip(http)
+
+    import asyncio
+
+    result = asyncio.run(run())
+    assert result["errors"] == []
+    assert result["pages"] == 1
+    page = get_conn().execute(
+        "SELECT slug FROM hub_pages WHERE slug != 'aaaaaaaa'"
+    ).fetchone()
+    close_conn()
+    assert page["slug"] == "bbbbbbbb"
+
+
+def test_cron_drip_returns_json_when_one_url_fails(client, monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+    monkeypatch.setattr("backlink_indexer.engine.network.PAGE_URLS", 1)
+    signup(client, "partial", "password1")
+    first = "https://example.com/first"
+    second = "https://example.com/second"
+    client.post(
+        "/app/projects",
+        data={
+            "name": "Partial",
+            "project_type": "indexing",
+            "daily_speed": "10",
+            "urls": f"{first}\n{second}",
+        },
+        follow_redirects=False,
+    )
+    with tx() as conn:
+        conn.execute(
+            """UPDATE urls SET kind='external', status='queued',
+               precheck_json='{"http_status":200}', normalized_url=url, host='example.com'"""
+        )
+    close_conn()
+    from backlink_indexer import network
+
+    real_create = network.create_page
+
+    def flaky(domain, url_ids):
+        if url_ids and url_ids[0] == int(get_conn().execute("SELECT MIN(id) AS id FROM urls").fetchone()["id"]):
+            raise RuntimeError("hub insert failed")
+        return real_create(domain, url_ids)
+
+    monkeypatch.setattr("backlink_indexer.engine.network.create_page", flaky)
+    response = client.post("/api/cron/drip", headers={"Authorization": "Bearer cron-secret"})
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.text != "Internal Server Error"
+    body = response.json()
+    assert body["ok"] is False
+    assert body["pages"] == 1
+    assert body["errors"][0]["error"].startswith("RuntimeError: hub insert failed")
+    rows = {
+        row["url"]: row["status"]
+        for row in get_conn().execute("SELECT url, status FROM urls").fetchall()
+    }
+    close_conn()
+    assert rows[first] == "queued"
+    assert rows[second] == "submitted"
+
+
+def test_cron_drip_returns_json_when_the_runner_raises(client, monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "cron-secret")
+
+    async def boom(client=None):
+        raise RuntimeError("scheduler blew up")
+
+    monkeypatch.setattr("backlink_indexer.indexer_routes.run_drip", boom)
+    response = client.post("/api/cron/drip", headers={"Authorization": "Bearer cron-secret"})
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] == "RuntimeError: scheduler blew up"
+    assert body["errors"][0]["error"] == "RuntimeError: scheduler blew up"

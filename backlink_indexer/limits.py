@@ -106,6 +106,20 @@ def reserve_slots(user: dict, requested: int) -> tuple[int, str]:
     return allowed, ""
 
 
+def release_added(user_id: int, count: int) -> None:
+    """Give daily URL slots back when a row is dropped as a duplicate after redirect."""
+    if count < 1:
+        return
+    day = usage_day()
+    with tx() as conn:
+        conn.execute(
+            """UPDATE daily_usage
+               SET urls_added = CASE WHEN urls_added > ? THEN urls_added - ? ELSE 0 END
+               WHERE user_id = ? AND day = ?""",
+            (count, count, user_id, day),
+        )
+
+
 def record_added(user_id: int, count: int) -> None:
     if count < 1:
         return

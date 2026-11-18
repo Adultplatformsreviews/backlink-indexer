@@ -41,6 +41,10 @@ STATE_LABELS = {
     "submitted_hub": "On hub",
     "checked": "Checked",
     "check_pending": "Not checked",
+    "unverified": "Unverified",
+    "not_sendable": "Not sendable",
+    "discovered": "Discovered",
+    "not_indexed_28d": "Not indexed 28d",
 }
 
 

@@ -626,6 +626,9 @@ def init_schema(conn: DB) -> None:
     _add_columns(conn, "projects", _PROJECT_COLUMNS)
     _add_columns(conn, "urls", _URL_COLUMNS)
     _relax_target_domain(conn)
+    from .schema_indexer import apply_indexer_schema
+
+    apply_indexer_schema(conn)
     _seed_defaults(conn)
     conn.commit()
 
@@ -657,6 +660,10 @@ def _seed_defaults(conn: DB) -> None:
         "yandex_site_host": "",
         "yandex_verification": DEFAULT_YANDEX_VERIFICATION,
         "google_site_verification": "",
+        "refund_window_days": "7",
+        "serp_daily_budget": "100",
+        "checker_tokens_per_url": "1",
+        "hub_rr_cursor": "0",
     }
     for key, value in defaults.items():
         conn.execute(

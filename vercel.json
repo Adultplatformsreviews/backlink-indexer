@@ -7,8 +7,28 @@
   },
   "crons": [
     {
+      "path": "/api/cron/quota-reset",
+      "schedule": "10 0 * * *"
+    },
+    {
       "path": "/api/cron/tick",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/precheck",
+      "schedule": "20 6 * * *"
+    },
+    {
+      "path": "/api/cron/drip",
+      "schedule": "40 6 * * *"
+    },
+    {
+      "path": "/api/cron/serp-check",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/inspection-poll",
+      "schedule": "20 7 * * *"
     }
   ]
 }

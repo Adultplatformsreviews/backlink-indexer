@@ -18,6 +18,7 @@ from .services.quotas import consume as consume_quota
 from .services.quotas import remaining as quota_remaining
 from .services.secrets import setting_or_env
 from .services.precheck import RobotsCache, precheck_url
+from .credits import confirm_indexed
 from .crawlhub import ping_hub
 from .services.urlutil import host_of, registrable_host
 
@@ -814,7 +815,17 @@ def mark_engines(user_id: int, project_id: int, ids: list[int], engine: str, ind
                     WHERE project_id=? AND id IN ({placeholders})""",
                 [state, now, project_id, *ids],
             )
-        return cur.rowcount
+        matched_ids: list[int] = []
+        if indexed:
+            matched = conn.execute(
+                f"SELECT id FROM urls WHERE project_id = ? AND id IN ({placeholders})",
+                [project_id, *ids],
+            ).fetchall()
+            matched_ids = [int(item["id"]) for item in matched]
+        count = cur.rowcount
+    for url_id in matched_ids:
+        confirm_indexed(url_id)
+    return count
 
 
 async def check_ids(user_id: int, project_id: int, ids: list[int]) -> tuple[int, str]:
@@ -862,6 +873,8 @@ async def check_ids(user_id: int, project_id: int, ids: list[int]) -> tuple[int,
                         row["id"],
                     ),
                 )
+            if state == "indexed":
+                confirm_indexed(int(row["id"]))
             updated += 1
     if updated == 0:
         return 0, "The SERP check did not return an index status. Nothing was changed."

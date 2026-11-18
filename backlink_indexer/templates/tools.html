@@ -8,6 +8,30 @@
   <article class="card"><h2>IndexNow</h2><p class="sub">Bing and Yandex accept IndexNow only for hosts where you serve the key file. Third-party backlinks are skipped.</p></article>
   <article class="card"><h2>Google Indexing API</h2><p class="sub">Own verified site only. A successful publish is “Submitted”, not “Indexed”.</p></article>
   <article class="card"><h2>SERP check</h2><p class="sub">Optional. Without a key, Google stays Unknown and you can mark a result you checked yourself.</p></article>
+  <article class="card">
+    <h2>Index checker</h2>
+    <p class="sub">Paste URLs to ask SerpApi whether Google or Bing currently shows them. Results are cached for 24 hours and count against the daily SerpApi budget. A check spends the configured credit rate only when an answer comes back. “Indexed” here means the URL was in the search results. Anything else stays unknown or not found.</p>
+    {% if serp_limit %}<p class="sub">SerpApi searches remaining today: {{ serp_left }} of {{ serp_limit }}.</p>{% endif %}
+    <form method="post" action="/app/tools/check">
+      <label class="field">One URL per line
+        <textarea name="urls" rows="6" placeholder="https://example.com/page">{{ pasted or '' }}</textarea>
+      </label>
+      <button class="btn red" type="submit">Check</button>
+    </form>
+    {% if checker %}
+    <ul>
+      {% for row in checker.results %}
+      <li>
+        {{ row.url }}
+        {% if row.error %}— {{ row.error }}{% else %}
+        · Google {{ row.engines.google }} · Bing {{ row.engines.bing }} · Yandex {{ row.engines.yandex }}
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="sub">Credits charged for this run: {{ checker.credits_charged }}.</p>
+    {% endif %}
+  </article>
 </div>
 {% if user.is_admin %}<p><a class="btn" href="/app/settings">Operator settings</a></p>{% endif %}
 {% endblock %}

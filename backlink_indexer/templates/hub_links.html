@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.slug }} · {{ host }}</title>
+  <link rel="canonical" href="{{ canonical }}">
+  {% if prev_url %}<link rel="prev" href="{{ prev_url }}">{% endif %}
+  {% if next_url %}<link rel="next" href="{{ next_url }}">{% endif %}
+  <meta name="robots" content="index,follow">
+</head>
+<body>
+  <main>
+    <h1>Links {{ page.slug }}</h1>
+    <p>{{ page.intro_text }}</p>
+    <p>Updated <time datetime="{{ updated }}">{{ updated }}</time></p>
+    <ol>
+      {% for row in links %}
+      <li><a href="{{ row.url }}" rel="nofollow ugc">{{ row.url }}</a></li>
+      {% endfor %}
+    </ol>
+    <nav>
+      {% if prev_url %}<a href="{{ prev_url }}">Previous</a>{% endif %}
+      {% if next_url %}<a href="{{ next_url }}">Next</a>{% endif %}
+    </nav>
+  </main>
+</body>
+</html>

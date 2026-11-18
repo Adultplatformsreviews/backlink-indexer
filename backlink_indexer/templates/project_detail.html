@@ -10,7 +10,8 @@
     </div>
     <h1 class="page-title" style="margin-bottom:.2rem">{{ project.name }}</h1>
     <p class="sub">{{ project.sent }} sent of {{ project.total }} · queue {{ project.queued }} · {% if user.unlimited %}pace Unlimited{% else %}speed {{ project.daily_speed }}/day{% endif %}</p>
-    <p class="sub">Indexed G {{ project.google_indexed }} · Y {{ project.yandex_indexed }} · B {{ project.bing_indexed }}. Accepted submissions G {{ project.google_accepted }} · Y {{ project.yandex_accepted }} · B {{ project.bing_accepted }}.</p>
+    <p class="sub">Indexed {{ report.indexed_rate_pct }}% · average {{ report.avg_label }} to index · Google {{ report.counts.by_engine.google.indexed }} indexed / {{ report.counts.by_engine.google.submitted }} submitted · Bing {{ report.counts.by_engine.bing.indexed }} · Yandex {{ report.counts.by_engine.yandex.indexed }}.</p>
+    <p class="sub">Indexed G {{ project.google_indexed }} · Y {{ project.yandex_indexed }} · B {{ project.bing_indexed }}. Accepted submissions G {{ project.google_accepted }} · Y {{ project.yandex_accepted }} · B {{ project.bing_accepted }}. Refunded {{ report.refunded }}.</p>
   </div>
   <div class="side-actions">
     {% if project.run_status == 'running' %}
@@ -22,7 +23,14 @@
     <a class="btn" href="/app/projects/{{ project.id }}/export.csv?filter={{ filter }}&q={{ q }}">Export CSV</a>
   </div>
 </section>
-<p class="honest">“Indexed” comes only from a SERP check or your manual mark. “Accepted” means Bing, Yandex, or IndexNow took the submission. A submission is never an index confirmation.</p>
+<p class="honest">“Indexed” comes only from a SERP check or your manual mark. “Accepted” means Bing, Yandex, or IndexNow took the submission. A submission is never an index confirmation. Reports count confirmed indexed URLs only. They never guess.</p>
+<p class="sub">Credits are reserved when a URL is accepted and consumed only if it is confirmed indexed. Not-indexable URLs are refunded immediately. URLs still not confirmed after {{ refund_days }} days are refunded. A later confirmation is not charged again.</p>
+{% if external_mode %}
+<p class="honest">External pages can't be forced into Google's index. We publish them on our crawl network for discovery and confirm with real SERP checks.</p>
+{% endif %}
+{% if crawl_stats %}
+<p>Verified Googlebot visits today: average {{ crawl_stats.avg_label }} from push to the first visit, fastest {{ crawl_stats.min_label }}, slowest {{ crawl_stats.max_label }}. {{ crawl_stats.tracked }} URLs tracked.</p>
+{% endif %}
 <section class="card">
   <h2>Crawl hub</h2>
   <p>These links are on other people's sites. Google, Bing, and Yandex will not accept a force-submit for a host you do not own. This app lists them on a public page of its own, so a crawler can find them.</p>
@@ -124,6 +132,7 @@
           <th><input type="checkbox" id="checkAll" aria-label="Select all"></th>
           <th>URL</th>
           <th>Link type</th>
+          <th>Status</th>
           <th>Queue</th>
           <th>Google</th>
           <th>Yandex</th>
@@ -143,6 +152,12 @@
             {% if row.queue_note %}<div class="sub">{{ row.queue_note }}</div>{% endif %}
           </td>
           <td>{% if row.link_type == 'internal' %}<span class="badge type-internal">Internal</span>{% elif row.link_type == 'external' %}<span class="badge type-external">External</span>{% else %}—{% endif %}</td>
+          <td>
+            <span class="badge status-{{ row.status or 'queued' }}" title="{{ row.status_tip or '' }}">{{ row.status_label or 'In Queue' }}</span>
+            {% if row.refunded_flag and row.status == 'indexed' %}<span class="badge status-refunded" title="Credits were refunded. This confirmation was not charged again.">Refunded</span>{% endif %}
+            {% if row.hub_page_url %}<div class="sub"><a href="{{ row.hub_page_url }}">Hub page</a></div>{% endif %}
+            {% if row.inspection_href %}<div class="sub"><a href="{{ row.inspection_href }}">Open in Search Console</a></div>{% endif %}
+          </td>
           <td>{{ state_label(row.queue_status) }}</td>
           <td>{{ state_label(row.google_state) }}</td>
           <td>{{ state_label(row.yandex_state) }}</td>
@@ -154,7 +169,7 @@
           <td><button class="btn history-btn" type="button" data-history="/app/projects/{{ project.id }}/urls/{{ row.id }}/history">History</button></td>
         </tr>
         {% else %}
-        <tr><td colspan="12" class="empty">No links in this filter.</td></tr>
+        <tr><td colspan="13" class="empty">No links in this filter.</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -1,5 +1,72 @@
 # Backlink Indexer
 
+A self-hosted dashboard for pasting external backlink URLs, pre-checking whether those pages are live, and helping search engines *discover* them. Own-site submission goes through Search Console and IndexNow. External URLs are listed on an indexer network you host. A URL is indexed only after a SERP check or a manual mark.
+
+**This tool cannot force Google to index a page on someone else’s website.** Credits are reserved when a URL is accepted and consumed only when it is confirmed indexed. Not-indexable URLs are refunded immediately. Anything still unconfirmed after the refund window (7 days by default, Settings → refund window) is refunded. SERP checks still run on day 1, 3, 7, 14, and 28. A later confirmation is not charged again.
+
+## Indexer network
+
+The operator (Settings → Indexer Network) registers one or more hostnames:
+
+1. Add the hostname. The app generates an IndexNow key and serves `https://<hostname>/{key}.txt` itself. Point the hostname’s DNS at this Vercel project, then click **Verify IndexNow key**.
+2. In Google Search Console, add the hub domain as a property and add the service-account email as an **Owner**. Upload that service-account JSON on the hub domain. Each Cloud project is allowed 200 Indexing API URLs per day. Add more JSON keys to raise that cap by 200 each. IndexNow’s cap on a hub domain is 10,000 URLs per day.
+3. Google push is off until you turn it on. The page shows this warning and it stays there: Google officially permits the Indexing API only for JobPosting and BroadcastEvent pages. Other use can get the project's quota revoked. Use at your own risk.
+4. External URLs are grouped into pages of at most 20 at `https://<hostname>/l/<slug>`, added only to that hostname’s sitemap, and pushed to IndexNow. Google is notified only when the toggle is on. A page is pushed at most twice (again on day 3 if nothing on it is crawled yet).
+5. The public `/hub` on this deployment is the fallback network: 25 URLs per page, `rel="nofollow ugc"`, and its sitemap lists only this app’s own pages. It does not call the Google Indexing API.
+
+Own sites (Settings → Connections) use Google OAuth with the Search Console scope, IndexNow on each verified host, sitemap resubmit, and the URL Inspection API. Inspection can move a URL to crawled. It never marks a URL indexed. The row links to Search Console so a person can request indexing there.
+
+### Migrations
+
+Schema changes are applied automatically the first time the process opens the database. They only add tables and columns. The same statements are recorded in `backlink_indexer/migrations/001_indexer_network.sql` for review. Nothing is dropped.
+
+### Environment variables
+
+| Variable | Required for | Purpose |
+| --- | --- | --- |
+| `SERPAPI_KEY` | SERP checks and the index checker | SerpApi key. Can also be saved in Settings. Searches are cached 24 hours. |
+| `ENCRYPTION_KEY` | Hub-domain service accounts, Search Console tokens, IndexNow keys | Passphrase used to encrypt those secrets at rest. |
+| `GOOGLE_CLIENT_ID` | Settings → Connections | OAuth client for Search Console. Redirect URI: `/app/connections/google/callback`. |
+| `GOOGLE_CLIENT_SECRET` | Settings → Connections | OAuth client secret. |
+| `CRON_SECRET` | `/api/cron/*` | Send `Authorization: Bearer <CRON_SECRET>`. On Vercel this should be set. |
+| `DATABASE_URL` (or `POSTGRES_URL`) | Durable deploys | Postgres connection. Without it the database is local SQLite. |
+
+Optional: `INDEXER_HOST_INTERVAL` (seconds between pre-check requests to one host, default 1), `PRECHECK_BUDGET_SECONDS`, `INDEXER_SKIP_LIVE_PRECHECK=1` (tests only).
+
+### Cron on the Vercel Hobby plan
+
+Hobby allows each Vercel cron to run **once per day** (up to 100 jobs). `vercel.json` only uses daily schedules, so a Hobby deploy is not rejected:
+
+| Path | When (UTC) | Role |
+| --- | --- | --- |
+| `/api/cron/quota-reset` | 00:10 | Reset daily quotas |
+| `/api/cron/tick` | 05:00 | Existing submission queue |
+| `/api/cron/precheck` | 06:20 | One bounded pre-check batch |
+| `/api/cron/drip` | 06:40 | One bounded hub-page batch |
+| `/api/cron/serp-check` | 07:00 | One bounded SERP batch |
+| `/api/cron/inspection-poll` | 07:20 | One bounded inspection batch |
+
+Hobby invokes a daily job sometime in that hour, not at the exact minute. These daily calls are a safety net. The frequent schedule is GitHub Actions.
+
+`.github/workflows/indexer-cron.yml` calls:
+
+- `/api/cron/precheck` every 15 minutes
+- `/api/cron/drip`, `/api/cron/serp-check`, and `/api/cron/inspection-poll` every hour
+
+Each call is `POST` with `Authorization: Bearer $CRON_SECRET`, `curl --fail`, and a 20 second timeout. You can also run it by hand from the Actions tab (`workflow_dispatch`).
+
+Setup after this file is on the default branch (scheduled workflows only run from the default branch):
+
+1. In the GitHub repo, add a secret named `CRON_SECRET` with the same value as the Vercel `CRON_SECRET` environment variable.
+2. Optionally set `APP_BASE_URL` as a repository **variable** or **secret**. If both are empty, the workflow uses `https://backlink-indexer-zeta.vercel.app`.
+3. Confirm the workflow is enabled under Actions. GitHub may delay a scheduled run, and it **disables scheduled workflows after 60 days without a commit** on the repository. A `workflow_dispatch` run or any new commit turns them back on.
+
+Each route takes a short database lease. A second caller that overlaps, or a run that starts while the previous one is still inside its 40 second lease, gets HTTP 200 and `"skipped": true` instead of doing the work twice. If a run is late or skipped, the next one continues from rows that are still due. A single invocation only processes a small batch and stops within about 8 seconds so it stays inside Hobby’s function time limit.
+
+[cron-job.org](https://cron-job.org) is a free alternative to GitHub’s scheduler. Point a job at the same paths, send the same Bearer header, and use a 20 second timeout. Keep the Vercel daily crons as the backup.
+
+Reports count confirmed indexed URLs only. They never guess.
+
 A self-hosted dashboard for pasting external backlink URLs, pre-checking whether those pages are live and actually link to your site, and helping search engines *discover* them as quickly as is legitimately possible.
 
 **This tool cannot force Google to index a page on someone else’s website.** Google Search Console and the Google Indexing API only work for properties you have verified. Tools that advertise “instant Google indexing” for third-party backlinks are overselling: at best they list your URLs on crawlable pages, ping feeds, and use IndexNow on *hosts they control*.
@@ -7,9 +74,9 @@ A self-hosted dashboard for pasting external backlink URLs, pre-checking whether
 What this app *does* do:
 
 1. **Pre-checks** each URL: HTTP status, whether the page is live, `meta robots` / `X-Robots-Tag` noindex, Googlebot `robots.txt` disallow, canonical pointing elsewhere, and whether the HTML contains a link to your target domain (dofollow / nofollow / mixed).
-2. **Discovery hub** — a public HTML page, XML sitemap, and RSS/Atom feeds that list submitted URLs so crawlers can find them from a domain *you* own. You can ping a WebSub hub and Bing’s sitemap ping. Google’s sitemap ping endpoint is deprecated and is not called.
-3. **IndexNow** for URLs on hosts you control (your hub, plus any host you mark as owned and can serve the key file on). Third-party backlink hosts are skipped; IndexNow will reject them anyway.
-4. **Optional Google Indexing API** for URLs on *your own* Search Console–verified site, via a service-account JSON. Clearly labelled own-site only.
+2. **Discovery hub** — public HTML pages on a hostname you control. Sitemaps list only that hostname’s own pages. Third-party URLs appear on those pages with `rel="nofollow ugc"`. Google’s sitemap ping endpoint is deprecated and is not called.
+3. **IndexNow** for hub pages and for hosts you have verified (the key file has to be on that host). Third-party hosts are not submitted to IndexNow.
+4. **Optional Google Indexing API** for a hub-page URL only, and only when that hub domain’s “Google push” toggle is on. The Indexing API is officially limited to JobPosting and BroadcastEvent pages; other use can get the Cloud project’s quota revoked. It is never used to pretend a third-party URL was submitted to Google.
 5. **Index status** via an optional SERP API (SerpAPI, ValueSERP, SearchApi.io, or a custom endpoint), plus a manual “Mark indexed / not indexed” toggle. Status is never invented.
 6. **CSV/TXT upload**, projects and batches, and **CSV export**.
 

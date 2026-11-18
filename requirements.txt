@@ -8,4 +8,5 @@ python-multipart>=0.0.12
 google-auth>=2.36
 google-api-python-client>=2.150
 psycopg[binary]>=3.2
+cryptography>=43.0
 pytest>=8.3

@@ -42,6 +42,49 @@ def service_account_present() -> bool:
     return service_account_info() is not None
 
 
+def access_token_for(info: dict[str, Any]) -> str:
+    """Bearer token for one service account. Tests may pass _access_token."""
+    preset = (info or {}).get("_access_token")
+    if preset:
+        return str(preset)
+    from google.oauth2 import service_account
+    import google.auth.transport.requests
+
+    credentials = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    credentials.refresh(google.auth.transport.requests.Request())
+    return credentials.token or ""
+
+
+async def publish_notification(
+    client: Any,
+    access_token: str,
+    url: str,
+    notification_type: str = "URL_UPDATED",
+) -> dict[str, Any]:
+    """POST URL_UPDATED to the Indexing API. Success is not an index confirmation."""
+    if notification_type not in {"URL_UPDATED", "URL_DELETED"}:
+        notification_type = "URL_UPDATED"
+    if not access_token:
+        return {"ok": False, "status": None, "detail": "Missing Google access token."}
+    try:
+        response = await client.post(
+            INDEXING_ENDPOINT,
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={"url": url, "type": notification_type},
+            timeout=30,
+        )
+    except Exception as exc:
+        return {"ok": False, "status": None, "detail": f"Google Indexing API request failed: {exc}"}
+    body = (response.text or "")[:800]
+    ok = response.status_code in {200, 201}
+    return {
+        "ok": ok,
+        "status": response.status_code,
+        "detail": f"HTTP {response.status_code}" + (f": {body}" if body else ""),
+        "response_text": body,
+    }
+
+
 def publish_url(url: str, notification_type: str = "URL_UPDATED") -> dict[str, Any]:
     """Publish a URL via the Google Indexing API.
 

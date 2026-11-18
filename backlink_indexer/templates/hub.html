@@ -30,7 +30,7 @@
   <header>
     <h1>Backlink discovery hub</h1>
     <p>These are submitted backlink URLs, listed so search engines can discover them from a site the owner controls. Listing a URL here is not a guarantee of indexing.</p>
-    <p class="meta">{{ count }} URL{{ 's' if count != 1 else '' }} · Generated {{ generated }} ·
+    <p class="meta">{{ total }} URL{{ 's' if total != 1 else '' }} · page {{ page }} of {{ pages }} · Generated {{ generated }} ·
       <a href="{{ hub.sitemap }}">Sitemap</a> ·
       <a href="{{ hub.rss }}">RSS</a> ·
       <a href="{{ hub.atom }}">Atom</a>
@@ -40,12 +40,16 @@
     {% if urls %}
     <ol>
       {% for row in urls %}
-      <li><a href="{{ row.url }}" rel="noopener">{{ row.url }}</a></li>
+      <li><a href="{{ row.url }}" rel="nofollow ugc">{{ row.url }}</a></li>
       {% endfor %}
     </ol>
     {% else %}
     <p>No URLs have been published to this hub yet.</p>
     {% endif %}
+    <nav>
+      {% if page > 1 %}<a href="/hub?page={{ page - 1 }}">Previous</a>{% endif %}
+      {% if page < pages %}<a href="/hub?page={{ page + 1 }}">Next</a>{% endif %}
+    </nav>
   </main>
   <footer>Backlink Indexer · public crawl surface</footer>
 </body>

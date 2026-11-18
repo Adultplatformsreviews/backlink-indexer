@@ -55,6 +55,7 @@
       <a class="side-link {{ 'on' if active == 'plans' else '' }}" href="/app/plans">Plans{% if user.plan_name %} · {{ user.plan_name }}{% endif %}</a>
       <a class="side-link {{ 'on' if active == 'affiliate' else '' }}" href="/app/affiliate">Affiliate program</a>
       <a class="side-link {{ 'on' if active == 'tools' else '' }}" href="/app/tools">Tools</a>
+      <a class="side-link {{ 'on' if active == 'connections' else '' }}" href="/app/settings/connections">Connections</a>
       <div class="side-label">SUPPORT</div>
       <a class="side-link {{ 'on' if active == 'notifications' else '' }}" href="/app/notifications">Notifications{% if unread %} <span>{{ unread }}</span>{% endif %}</a>
       <a class="side-link {{ 'on' if active == 'tickets' else '' }}" href="/app/tickets">Tickets</a>
@@ -62,6 +63,7 @@
       {% if user.is_admin %}
       <a class="side-link {{ 'on' if active == 'users' else '' }}" href="/app/users">Users</a>
       <a class="side-link {{ 'on' if active == 'settings' else '' }}" href="/app/settings">Settings</a>
+      <a class="side-link {{ 'on' if active == 'network' else '' }}" href="/app/settings/network">Indexer Network</a>
       {% endif %}
     </aside>
     {% endif %}

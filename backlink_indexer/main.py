@@ -93,6 +93,13 @@ app.mount(
 @app.middleware("http")
 async def close_db(request: Request, call_next):
     try:
+        request.state.hub_domain = None
+        try:
+            from .network import domain_for_host
+
+            request.state.hub_domain = domain_for_host(request.headers.get("host") or "")
+        except Exception:
+            request.state.hub_domain = None
         return await call_next(request)
     finally:
         close_conn()
@@ -337,7 +344,19 @@ async def favicon():
 
 @app.get("/")
 async def landing(request: Request):
-    return render(request, "landing.html", active="home")
+    domain = getattr(request.state, "hub_domain", None)
+    if domain:
+        from .indexer_routes import render_domain_home
+
+        return render_domain_home(request, domain)
+    stats = None
+    try:
+        from .engine import googlebot_stats
+
+        stats = googlebot_stats(None)
+    except Exception:
+        stats = None
+    return render(request, "landing.html", active="home", crawl_stats=stats)
 
 
 @app.get("/pricing")
@@ -609,11 +628,16 @@ async def create_project_route(
         lines.extend(locs)
     sites = await _bing_sites() if lines else []
     result = add_urls(user, project, lines, "Initial batch", bing_sites=sites) if lines else {"added": 0, "duplicates": 0, "skipped": 0, "not_charged": 0, "limit_message": ""}
+    from .engine import finalize_intake
+
+    result = await finalize_intake(result)
     message = f"Project created. Added {result['added']} link(s)."
     if result.get("duplicates"):
         message += f" {result['duplicates']} duplicate(s) ignored."
     if result.get("skipped"):
         message += f" {result['skipped']} line(s) were not URLs."
+    if result.get("not_sendable"):
+        message += f" {len(result['not_sendable'])} not sendable; those credits were released."
     if result.get("limit_message"):
         message += " " + result["limit_message"]
     if sitemap_note:
@@ -641,6 +665,23 @@ async def project_detail(project_id: int, request: Request, q: str = "", filter:
     listing = list_urls(project_id, q=q, filt=filter, page=page, per=per)
     annotate_rows(project, listing["urls"])
     base = crawl_base(str(request.base_url))
+    from .engine import campaign_report, decorate_url, googlebot_stats
+
+    report = campaign_report(project_id)
+    report["indexed_rate_pct"] = round(float(report["indexed_rate"]) * 100, 1)
+    report["avg_label"] = (
+        f"{report['avg_days_to_index']} days" if report["avg_days_to_index"] is not None else "—"
+    )
+    listing["urls"] = [decorate_url(row, base) for row in listing["urls"]]
+    external_row = get_conn().execute(
+        """SELECT COUNT(*) AS c FROM urls
+           WHERE project_id = ? AND (kind = 'external' OR link_type = 'external')""",
+        (project_id,),
+    ).fetchone()
+    try:
+        crawl_stats = googlebot_stats(project_id)
+    except Exception:
+        crawl_stats = None
     return render(
         request,
         "project_detail.html",
@@ -658,6 +699,10 @@ async def project_detail(project_id: int, request: Request, q: str = "", filter:
         project_sitemap=f"{base}/sitemaps/{project['slug']}.xml",
         links_sitemap=f"{base}/sitemaps/{project['slug']}-links.xml",
         verify_url=base + "/",
+        report=report,
+        external_mode=bool(external_row and external_row["c"]),
+        crawl_stats=crawl_stats,
+        refund_days=get_setting("refund_window_days") or "7",
         engine_banner="" if any(_configured_map().values()) else (
             "No search engine is configured. Links can still be checked for HTTP status. "
             "Set INDEXNOW_KEY, or Bing, Yandex, and Google keys, before a submission can be accepted."
@@ -816,11 +861,16 @@ async def add_project_urls(
     kind = _clean_link_type(link_type)
     sites = await _bing_sites() if kind == "auto" else []
     result = add_urls(user, project, lines, "Added from project", link_type=kind, bing_sites=sites)
+    from .engine import finalize_intake
+
+    result = await finalize_intake(result)
     message = f"Added {result['added']} link(s)."
     if result.get("duplicates"):
         message += f" {result['duplicates']} duplicate(s)."
     if result.get("skipped"):
         message += f" {result['skipped']} line(s) were not URLs."
+    if result.get("not_sendable"):
+        message += f" {len(result['not_sendable'])} not sendable; those credits were released."
     if result.get("limit_message"):
         message += " " + result["limit_message"]
     if sitemap_note:
@@ -939,7 +989,18 @@ async def plans_page(request: Request):
     if redirect:
         return redirect
     user = get_user(user["id"]) or user
-    return render(request, "plans.html", user=user, active="plans", speed=_account_speed(user))
+    from .credits import summary_for_user
+
+    summary = summary_for_user(user["id"])
+    return render(
+        request,
+        "plans.html",
+        user=user,
+        active="plans",
+        speed=_account_speed(user),
+        refund_days=get_setting("refund_window_days") or "7",
+        refunded_urls=summary["refunded_urls"],
+    )
 
 
 @app.post("/app/plans/topup")
@@ -960,7 +1021,18 @@ async def tools_page(request: Request):
     user, redirect = _need(request)
     if redirect:
         return redirect
-    return render(request, "tools.html", user=user, active="tools", hub=hub_urls(request))
+    from .engine import serp_remaining
+
+    left, limit = serp_remaining()
+    return render(
+        request,
+        "tools.html",
+        user=user,
+        active="tools",
+        hub=hub_urls(request),
+        serp_left=left,
+        serp_limit=limit,
+    )
 
 
 @app.get("/app/notifications")
@@ -1086,6 +1158,9 @@ async def settings_page(request: Request):
             settings[setting_key] = value
     hosts = get_conn().execute("SELECT * FROM owned_hosts ORDER BY host").fetchall()
     info = google_indexing.service_account_info() or {}
+    from .engine import serp_remaining
+
+    serp_left, serp_limit = serp_remaining()
     return render(
         request,
         "settings.html",
@@ -1096,6 +1171,8 @@ async def settings_page(request: Request):
         sa_email=info.get("client_email", ""),
         hub=hub_urls(request),
         forbidden=False,
+        serp_left=serp_left,
+        serp_limit=serp_limit,
     )
 
 
@@ -1130,6 +1207,9 @@ async def save_settings(
     yandex_site_host: str = Form(""),
     yandex_verification: str = Form(""),
     google_site_verification: str = Form(""),
+    serp_daily_budget: str = Form("100"),
+    refund_window_days: str = Form("7"),
+    checker_tokens_per_url: str = Form("1"),
 ):
     user, redirect = _need(request)
     if redirect:
@@ -1168,6 +1248,9 @@ async def save_settings(
         "serp_provider": serp_provider if serp_provider in {"serpapi", "valueserp", "searchapi", "custom"} else "serpapi",
         "serp_endpoint": serp_endpoint.strip(),
         "tokens_per_url": str(max(0, int(tokens_per_url or "1"))),
+        "serp_daily_budget": str(max(0, int(serp_daily_budget or "100"))),
+        "refund_window_days": str(max(1, int(refund_window_days or "7"))),
+        "checker_tokens_per_url": str(max(0, int(checker_tokens_per_url or "1"))),
     }
     if indexnow_key.strip():
         key = indexnow_key.strip()
@@ -1238,20 +1321,15 @@ async def v1_credits(request: Request):
     user = _bearer_user(request)
     if not user:
         raise HTTPException(401, "Send Authorization: Bearer <api key>.")
+    from .indexer_routes import _credit_payload
+
+    payload = _credit_payload(user)
     if user.get("unlimited"):
-        return {
-            "unlimited": True,
-            "plan": "VIP",
-            "token_balance": None,
-            "daily_speed_cap": None,
-            "note": "No in-app URL, speed, or token limit. Engine quotas still apply.",
-        }
-    return {
-        "unlimited": False,
-        "token_balance": user["token_balance"],
-        "daily_speed_cap": user["daily_speed_cap"],
-        "plan": user["plan_name"],
-    }
+        payload["note"] = (
+            "No in-app URL, speed, or token limit. Engine quotas still apply. "
+            + payload["note"]
+        )
+    return payload
 
 
 @app.get("/api/v1/campaigns")
@@ -1283,8 +1361,19 @@ async def v1_create(request: Request):
         lines = lines.splitlines()
     kind = _clean_link_type(str(payload.get("link_type") or "auto"))
     sites = await _bing_sites() if lines and kind == "auto" else []
-    result = add_urls(user, project, [str(item) for item in lines], "API batch", link_type=kind, bing_sites=sites) if lines else {"added": 0}
-    return {"project": get_project(project["id"], user["id"]), "ingest": result}
+    result = add_urls(user, project, [str(item) for item in lines], "API batch", link_type=kind, bing_sites=sites) if lines else {
+        "added": 0, "accepted": [], "not_sendable": [], "skipped_duplicates": [],
+    }
+    from .engine import finalize_intake
+
+    result = await finalize_intake(result)
+    return {
+        "project": get_project(project["id"], user["id"]),
+        "ingest": result,
+        "accepted": result.get("accepted") or [],
+        "not_sendable": result.get("not_sendable") or [],
+        "skipped_duplicates": result.get("skipped_duplicates") or [],
+    }
 
 
 @app.get("/api/v1/campaigns/{project_id}")
@@ -1295,7 +1384,9 @@ async def v1_get(project_id: int, request: Request):
     project = get_project(project_id, user["id"])
     if not project:
         raise HTTPException(404, "Project not found")
-    return {"project": project}
+    from .engine import campaign_report
+
+    return {"project": project, **campaign_report(project_id)}
 
 
 @app.get("/api/v1/campaigns/{project_id}/report")
@@ -1332,7 +1423,11 @@ async def v1_urls(project_id: int, request: Request):
         lines = lines.splitlines()
     kind = _clean_link_type(str(payload.get("link_type") or "auto"))
     sites = await _bing_sites() if kind == "auto" else []
-    return add_urls(user, project, [str(item) for item in lines], "API batch", link_type=kind, bing_sites=sites)
+    from .engine import finalize_intake
+
+    result = add_urls(user, project, [str(item) for item in lines], "API batch", link_type=kind, bing_sites=sites)
+    result = await finalize_intake(result)
+    return result
 
 
 @app.api_route("/api/cron/tick", methods=["GET", "POST"])
@@ -1350,6 +1445,13 @@ async def cron_tick(request: Request):
 
 @app.get("/robots.txt")
 async def robots_txt(request: Request):
+    domain = getattr(request.state, "hub_domain", None)
+    if domain:
+        body = (
+            "User-agent: *\nAllow: /\nAllow: /l/\nDisallow: /app\nDisallow: /api/\n"
+            f"Sitemap: https://{domain['hostname']}/sitemap.xml\n"
+        )
+        return PlainTextResponse(body)
     base = crawl_base(str(request.base_url))
     body = (
         "User-agent: *\nAllow: /hub\nAllow: /hub/\nAllow: /sitemap.xml\nAllow: /sitemaps/\nAllow: /robots.txt\n"
@@ -1375,6 +1477,12 @@ def _xml_urlset(locs: list[tuple[str, str]]) -> str:
 
 @app.get("/sitemap.xml")
 async def sitemap_index(request: Request):
+    domain = getattr(request.state, "hub_domain", None)
+    if domain:
+        from .network import domain_sitemap_locs
+
+        locs = [(loc, (stamp or "")[:10]) for loc, stamp in domain_sitemap_locs(domain)]
+        return Response(_xml_urlset(locs), media_type="application/xml")
     base = crawl_base(str(request.base_url))
     today = utcnow()[:10]
     parts = [
@@ -1432,39 +1540,43 @@ def _hub_context(project: dict, listing: dict, request: Request) -> dict:
 
 
 @app.get("/hub")
-async def hub_html(request: Request):
+async def hub_html(request: Request, page: int = 1):
+    page_size = 25
+    page = max(1, int(page or 1))
     rows = _hub_rows()
+    total = len(rows)
+    pages = max(1, (total + page_size - 1) // page_size)
+    if page > pages:
+        page = pages
+    start = (page - 1) * page_size
     return render(
         request,
         "hub.html",
-        urls=rows,
+        urls=rows[start : start + page_size],
         hub=hub_urls(request),
         generated=utcnow(),
-        count=len(rows),
+        count=min(page_size, max(0, total - start)),
+        total=total,
+        page=page,
+        pages=pages,
     )
 
 
 @app.get("/hub/sitemap.xml")
 async def hub_sitemap(request: Request):
-    rows = _hub_rows()
+    """Fallback hub sitemap. Only this app's own pages, never the third-party URLs."""
     today = utcnow()[:10]
     hub = hub_urls(request)
-    parts = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-        "  <url>",
-        f"    <loc>{xml_escape(hub['hub'])}</loc>",
-        f"    <lastmod>{today}</lastmod>",
-        "  </url>",
-    ]
-    for row in rows:
-        lastmod = (row.get("updated_at") or row.get("created_at") or today)[:10]
-        parts.append("  <url>")
-        parts.append(f"    <loc>{xml_escape(row['url'])}</loc>")
-        parts.append(f"    <lastmod>{xml_escape(lastmod)}</lastmod>")
-        parts.append("  </url>")
-    parts.append("</urlset>")
-    return Response("\n".join(parts) + "\n", media_type="application/xml")
+    total = len(_hub_rows())
+    pages = max(1, (total + 24) // 25)
+    locs = [(hub["hub"], today)]
+    for number in range(2, pages + 1):
+        locs.append((f"{hub['hub']}?page={number}", today))
+    from .network import fallback_page_locs
+
+    for loc, stamp in fallback_page_locs(hub["base"]):
+        locs.append((loc, (stamp or today)[:10]))
+    return Response(_xml_urlset(locs), media_type="application/xml")
 
 
 @app.get("/hub/feed.xml")
@@ -1574,11 +1686,28 @@ async def project_hub(slug: str, request: Request):
 
 
 @app.get("/{key}.txt")
-async def indexnow_key_file(key: str):
+async def indexnow_key_file(key: str, request: Request):
+    domain = getattr(request.state, "hub_domain", None)
+    if domain and domain.get("indexnow_key") == key:
+        return PlainTextResponse(key)
+    from .network import domain_for_host, list_domains
+
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    matched = domain or domain_for_host(host)
+    if matched and matched.get("indexnow_key") == key:
+        return PlainTextResponse(key)
+    for item in list_domains():
+        if item.get("indexnow_key") == key and item.get("hostname") == host:
+            return PlainTextResponse(key)
     configured = setting_or_env("indexnow_key", "INDEXNOW_KEY")[0]
     if not configured or key != configured:
         raise HTTPException(404, "Unknown IndexNow key")
     return PlainTextResponse(configured)
+
+
+from .indexer_routes import register as _register_indexer
+
+_register_indexer(app)
 
 
 def _mask(value: str) -> str:

@@ -499,6 +499,11 @@ html[data-theme="dark"] .engine-card { background: #1a0f2e; }
 .logo-use_indexnow { background-color: #ff6eb4; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='8' y='17' font-size='14' font-family='sans-serif' fill='white'%3EI%3C/text%3E%3C/svg%3E"); }
 .source-tabs { display: flex; gap: .4rem; margin: .2rem 0 .7rem; }
 .source-tabs .btn.on { background: linear-gradient(90deg, #7b2ff7, #ff1aa8); color: #fff; border-color: transparent; }
+.warn-permanent { background: #fff4e5; border: 1px solid #e6b15c; color: #6a4a12; padding: .7rem .85rem; border-radius: 12px; }
+.badge.status-indexed { background: #e5f6ea; color: #0d6b32; }
+.badge.status-queued { background: #efe6ff; color: #5b21b6; }
+.badge.status-submitted, .badge.status-discovered { background: #e7f1ff; color: #1d4e89; }
+.badge.status-not_sendable, .badge.status-refunded { background: #fff1e6; color: #8a4b08; }
 .badge.type-internal { background: #efe6ff; color: #6a2ee8; }
 .badge.type-external { background: #ffe4f3; color: #c4006a; }
 html[data-theme="dark"] .badge.type-internal { background: #3a2466; color: #f3e9ff; }

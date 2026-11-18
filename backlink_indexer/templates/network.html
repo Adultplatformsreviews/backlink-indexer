@@ -1,0 +1,68 @@
+{% extends "layout.html" %}
+{% block title %}Indexer Network · Backlink Indexer{% endblock %}
+{% block content %}
+<p class="kicker">Operator</p>
+<h1 class="page-title">Indexer Network</h1>
+<p class="sub">Register hostnames you control, point their DNS at this deployment, and the app serves hub pages, the sitemap, and the IndexNow key file for that hostname.</p>
+<form class="card" method="post" action="/app/settings/network" enctype="multipart/form-data">
+  <input type="hidden" name="action" value="add">
+  <h2>Add a hub domain</h2>
+  <label class="field">Hostname <input name="hostname" placeholder="links.example.com" required></label>
+  <label class="engine-row">
+    <input type="checkbox" name="google_push" value="1">
+    <span class="engine-name">Google push</span>
+  </label>
+  <p class="warn-permanent">Google officially permits the Indexing API only for JobPosting and BroadcastEvent pages. Other use can get the project's quota revoked. Use at your own risk.</p>
+  <label class="field">Google service-account JSON (optional, must be an owner of this domain in Search Console)
+    <input type="file" name="file" accept="application/json,.json">
+  </label>
+  <button class="btn red" type="submit">Add domain</button>
+</form>
+{% for domain in domains %}
+<section class="card">
+  <h2>{{ domain.hostname }}</h2>
+  <p class="sub">IndexNow key <code>{{ domain.indexnow_key }}</code>
+    {% if domain.indexnow_verified_at %}· verified {{ domain.indexnow_verified_at }}{% else %}· not verified yet{% endif %}</p>
+  <p class="sub">This app serves <code>https://{{ domain.hostname }}/{{ domain.indexnow_key }}.txt</code> when the hostname points here. Google Indexing API quota is 200 URLs per day for each Cloud project. IndexNow quota is 10,000 per day.</p>
+  <p>Last push: {{ domain.last_push_at or "—" }}{% if domain.last_error %} · Last error: {{ domain.last_error }}{% endif %}</p>
+  <p>IndexNow today: {{ domain.quota.indexnow_used }} / {{ domain.quota.indexnow_limit }}. Google remaining: {{ domain.quota.google_remaining }}.</p>
+  <ul>
+    {% for project in domain.quota.google_projects %}
+    <li>{{ project.email }} · {{ project.used }} / {{ project.limit }} today</li>
+    {% else %}
+    <li>No Google Cloud project attached.</li>
+    {% endfor %}
+  </ul>
+  {% if domain.emails %}<p class="sub">Service accounts: {{ domain.emails | join(", ") }}</p>{% endif %}
+  <form method="post" action="/app/settings/network">
+    <input type="hidden" name="domain_id" value="{{ domain.id }}">
+    <label class="engine-row">
+      <input type="checkbox" name="google_push" value="1" {% if domain.google_push_enabled %}checked{% endif %}>
+      <span class="engine-name">Google push</span>
+    </label>
+    <p class="warn-permanent">Google officially permits the Indexing API only for JobPosting and BroadcastEvent pages. Other use can get the project's quota revoked. Use at your own risk.</p>
+    <button class="btn" type="submit" name="action" value="push">Save Google push</button>
+    <button class="btn" type="submit" name="action" value="verify">Verify IndexNow key</button>
+    <button class="btn" type="submit" name="action" value="delete">Remove domain</button>
+  </form>
+  <form method="post" action="/app/settings/network" enctype="multipart/form-data">
+    <input type="hidden" name="action" value="gcp">
+    <input type="hidden" name="domain_id" value="{{ domain.id }}">
+    <label class="field">Add another Cloud project <input type="file" name="file" accept="application/json,.json" required></label>
+    <button class="btn" type="submit">Upload JSON</button>
+  </form>
+</section>
+{% endfor %}
+<section class="card">
+  <h2>Push log</h2>
+  {% if events %}
+  <ul>
+    {% for event in events %}
+    <li><code>{{ event.type }}</code> {{ event.created_at }} — {{ event.payload }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="sub">No pushes yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

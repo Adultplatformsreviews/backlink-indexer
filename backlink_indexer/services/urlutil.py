@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 PRIVATE_NETS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -42,8 +42,39 @@ def normalize_submitted(url: str) -> str:
     return url
 
 
+_TRACKING_KEYS = {"fbclid", "gclid", "gclsrc", "dclid", "msclkid", "mc_eid", "igshid", "yclid"}
+
+
+def canonicalize(url: str) -> str:
+    """Trim, lowercase the host, drop fragments and tracking params.
+
+    Redirects are followed later, during pre-check. This form is what dedupe uses.
+    """
+    url = normalize_submitted(url)
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return ""
+    port = parsed.port
+    netloc = host
+    if port and not (
+        (parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80)
+    ):
+        netloc = f"{host}:{port}"
+    kept = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.lower()
+        if lowered.startswith("utm_") or lowered in _TRACKING_KEYS:
+            continue
+        kept.append((key, value))
+    path = parsed.path or "/"
+    return urlunparse((parsed.scheme.lower(), netloc, path, "", urlencode(kept, doseq=True), ""))
+
+
 def host_of(url: str) -> str:
-    return urlparse(url).hostname or ""
+    return (urlparse(url).hostname or "").lower()
 
 
 def registrable_host(host: str) -> str:

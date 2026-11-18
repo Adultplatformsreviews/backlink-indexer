@@ -4,10 +4,11 @@ import csv
 import io
 
 from .config import PUBLIC_BASE_URL
+from .credits import deduct, trim_for_balance, unit_cost
 from .database import get_conn, get_setting, insert_id, tx, utcnow
 from .limits import record_added, reserve_slots
-from .services import bing_webmaster
-from .services.urlutil import host_of, normalize_submitted, registrable_host
+from .services import bing_webmaster, gsc
+from .services.urlutil import canonicalize, host_of, normalize_submitted, registrable_host
 
 
 def parse_upload(text: str, filename: str) -> list[str]:
@@ -89,6 +90,43 @@ def classify_link(url: str, choice: str, bing_sites: list[str] | None = None) ->
     return "external"
 
 
+def prepare_urls(raw_lines: list[str]) -> tuple[list[str], int, list[str]]:
+    """Canonicalize and dedupe inside the pasted batch."""
+    seen: set[str] = set()
+    urls: list[str] = []
+    skipped = 0
+    skipped_duplicates: list[str] = []
+    for line in raw_lines:
+        piece = line.split(",")[0] if "," in line and not line.strip().lower().startswith("http") else line
+        url = canonicalize(piece)
+        if not url:
+            if line.strip():
+                skipped += 1
+            continue
+        if url in seen:
+            skipped_duplicates.append(url)
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls, skipped, skipped_duplicates
+
+
+def _empty_ingest(skipped: int, skipped_duplicates: list[str], limit_message: str = "") -> dict:
+    return {
+        "added": 0,
+        "duplicates": len(skipped_duplicates),
+        "skipped": skipped,
+        "not_charged": 0,
+        "charge": 0,
+        "batch_id": None,
+        "limit_message": limit_message,
+        "accepted": [],
+        "not_sendable": [],
+        "skipped_duplicates": list(skipped_duplicates),
+        "ids": [],
+    }
+
+
 def add_urls(
     user: dict,
     project: dict,
@@ -97,24 +135,46 @@ def add_urls(
     link_type: str = "auto",
     bing_sites: list[str] | None = None,
 ) -> dict:
-    """Add every valid URL. Duplicates are counted and skipped. There is no token charge."""
-    urls, skipped, duplicates = normalize_lines(raw_lines)
+    """Add every valid URL. Credits are reserved, not spent, until a URL is confirmed indexed."""
+    urls, skipped, skipped_duplicates = prepare_urls(raw_lines)
     if not urls:
-        return {
-            "added": 0, "duplicates": duplicates, "skipped": skipped, "not_charged": 0,
-            "charge": 0, "batch_id": None, "limit_message": "",
-        }
+        return _empty_ingest(skipped, skipped_duplicates)
     allowed, limit_message = reserve_slots(user, len(urls))
     urls = urls[:allowed]
     if not urls:
-        return {
-            "added": 0, "duplicates": 0, "skipped": skipped, "not_charged": 0,
-            "charge": 0, "batch_id": None, "limit_message": limit_message,
-        }
+        return _empty_ingest(skipped, skipped_duplicates, limit_message)
     now = utcnow()
     in_hub = 0 if project.get("project_type") == "check" else 1
+    cost = unit_cost(user)
     added = 0
+    accepted: list[dict] = []
+    ids: list[int] = []
     with tx() as conn:
+        urls, credit_message = trim_for_balance(conn, int(user["id"]), urls, cost)
+        if credit_message:
+            limit_message = (limit_message + " " + credit_message).strip()
+        if not urls:
+            return _empty_ingest(skipped, skipped_duplicates, limit_message)
+        existing_rows = conn.execute(
+            "SELECT url, normalized_url FROM urls WHERE project_id = ?",
+            (project["id"],),
+        ).fetchall()
+        have = set()
+        for existing in existing_rows:
+            if existing["url"]:
+                have.add(existing["url"])
+            if existing["normalized_url"]:
+                have.add(existing["normalized_url"])
+        fresh = []
+        for url in urls:
+            if url in have:
+                skipped_duplicates.append(url)
+                continue
+            have.add(url)
+            fresh.append(url)
+        urls = fresh
+        if not urls:
+            return _empty_ingest(skipped, skipped_duplicates, limit_message)
         batch_id = insert_id(
             conn,
             "INSERT INTO batches (project_id, name, created_at) VALUES (?, ?, ?)",
@@ -122,26 +182,40 @@ def add_urls(
         )
         for url in urls:
             try:
-                kind = classify_link(url, link_type, bing_sites)
-                conn.execute(
+                link = classify_link(url, link_type, bing_sites)
+                kind = gsc.classify_kind(int(user["id"]), url)
+                url_id = insert_id(
+                    conn,
                     """INSERT INTO urls
-                       (project_id, batch_id, url, in_hub, link_type, submission_status, index_status,
-                        google_state, yandex_state, bing_state, queue_status, queue_note,
-                        created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, 'pending', 'unknown',
-                               'unknown', 'unknown', 'unknown', 'queued', '', ?, ?)""",
-                    (project["id"], batch_id, url, in_hub, kind, now, now),
+                       (project_id, batch_id, url, normalized_url, host, kind, in_hub, link_type,
+                        submission_status, index_status, google_state, yandex_state, bing_state,
+                        queue_status, queue_note, status, precheck_json, credits_held, credits_state,
+                        next_check_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unknown',
+                               'unknown', 'unknown', 'unknown', 'queued', '', 'queued', '', ?, ?, ?, ?, ?)""",
+                    (
+                        project["id"], batch_id, url, url, host_of(url), kind, in_hub, link,
+                        cost, "reserved" if cost else "", now, now, now,
+                    ),
                 )
                 added += 1
+                ids.append(url_id)
+                accepted.append({"id": url_id, "url": url, "status": "queued", "kind": kind})
             except Exception:
-                duplicates += 1
+                skipped_duplicates.append(url)
+        if cost and added and not deduct(conn, int(user["id"]), added * cost):
+            raise RuntimeError("Credit balance changed while reserving URLs.")
     record_added(user["id"], added)
     return {
         "added": added,
-        "duplicates": duplicates,
+        "duplicates": len(skipped_duplicates),
         "skipped": skipped,
         "not_charged": 0,
-        "charge": 0,
+        "charge": added * cost,
         "batch_id": batch_id,
         "limit_message": limit_message,
+        "accepted": accepted,
+        "not_sendable": [],
+        "skipped_duplicates": skipped_duplicates,
+        "ids": ids,
     }

@@ -46,6 +46,11 @@
   </label>
   <label class="field">SERP API key <input name="serp_api_key" value="{{ settings.serp_api_key }}" placeholder="Leave the masked value to keep the current key"></label>
   <label class="field">Custom SERP endpoint <input name="serp_endpoint" value="{{ settings.serp_endpoint }}"></label>
+  <label class="field">SerpApi searches per day <input name="serp_daily_budget" value="{{ settings.serp_daily_budget or '100' }}"></label>
+  <p class="sub">SerpApi searches remaining today: {{ serp_left }} of {{ serp_limit }}.</p>
+  <label class="field">Refund window (days) <input name="refund_window_days" value="{{ settings.refund_window_days or '7' }}"></label>
+  <p class="sub">Credits stay reserved until a URL is confirmed indexed. After this many days without confirmation they go back to the balance. SERP checks still run through day 28.</p>
+  <label class="field">Index checker credits per URL <input name="checker_tokens_per_url" value="{{ settings.checker_tokens_per_url or '1' }}"></label>
   <button class="btn red" type="submit">Save</button>
 </form>
 <form method="post" action="/app/settings"><input type="hidden" name="action" value="gen-indexnow"><button class="btn" type="submit">Generate IndexNow key</button></form>

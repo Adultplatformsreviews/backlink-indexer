@@ -9,6 +9,26 @@
     {
       "path": "/api/cron/tick",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/precheck",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/drip",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/serp-check",
+      "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/cron/inspection-poll",
+      "schedule": "30 * * * *"
+    },
+    {
+      "path": "/api/cron/quota-reset",
+      "schedule": "0 0 * * *"
     }
   ]
 }

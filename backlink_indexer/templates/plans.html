@@ -10,5 +10,6 @@
   <p><strong>{{ usage.label }}</strong>. You can add 100 URLs each calendar day. The count resets daily.</p>
   {% endif %}
   <p class="sub">Google Indexing API defaults to 200/day. Bing Webmaster is 10,000/day. IndexNow fair use here is 10,000/day. A submission is not an index confirmation.</p>
+  <p>Credits are reserved when you add a URL and consumed only when it is confirmed indexed. Not-indexable URLs are refunded immediately. URLs still unconfirmed after the refund window ({{ refund_days }} days) are refunded. A later confirmation is not charged again. Refunded URLs: {{ refunded_urls }}.</p>
 </div>
 {% endblock %}

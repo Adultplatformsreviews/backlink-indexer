@@ -33,6 +33,69 @@ def build_query(url: str) -> str:
     return f"site:{url}"
 
 
+def inurl_query(url: str) -> str:
+    """Fallback when an exact site: query misses. Path on the same host only."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = parsed.path or "/"
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    return f"inurl:{path} site:{host}"
+
+
+async def serpapi_search(
+    client: httpx.AsyncClient,
+    api_key: str,
+    engine: str,
+    query: str,
+    match_url: str,
+) -> dict[str, Any]:
+    """One SerpApi search. indexed is True/False, or None when the call failed.
+
+    Yandex is reported as unverified when SerpApi rejects that engine.
+    A hit is never invented. match_url is the page we are looking for.
+    """
+    if not api_key:
+        return {"ok": False, "indexed": None, "detail": "No SerpApi key is configured.", "query": query, "engine": engine}
+    try:
+        data, _note = await _get(
+            client,
+            "https://serpapi.com/search.json",
+            {"engine": engine, "q": query, "api_key": api_key, "num": 10},
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "indexed": None,
+            "unverified": engine == "yandex",
+            "detail": f"{type(exc).__name__}: {exc}",
+            "query": query,
+            "engine": engine,
+        }
+    error = data.get("error")
+    if error:
+        return {
+            "ok": False,
+            "indexed": None,
+            "unverified": engine == "yandex",
+            "detail": str(error),
+            "query": query,
+            "engine": engine,
+        }
+    results = data.get("organic_results") or []
+    links = [item.get("link") for item in results if isinstance(item, dict)]
+    indexed = _match_results(match_url, links)
+    return {
+        "ok": True,
+        "indexed": bool(indexed),
+        "unverified": False,
+        "detail": f"{'Indexed' if indexed else 'Not found in top results'} for {query}.",
+        "query": query,
+        "engine": engine,
+        "hits": [link for link in links[:5] if link],
+    }
+
+
 async def check_indexed(
     client: httpx.AsyncClient,
     url: str,

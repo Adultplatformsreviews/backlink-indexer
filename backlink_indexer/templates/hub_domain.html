@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ host }} link index</title>
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://{{ host }}/">
+</head>
+<body>
+  <main>
+    <h1>{{ host }}</h1>
+    <p>Pages on this host list third-party URLs so crawlers can discover them. A listing is not an index confirmation.</p>
+    {% if pages %}
+    <ul>
+      {% for page in pages %}
+      <li><a href="/l/{{ page.slug }}">{{ page.slug }}</a> — {{ page.intro_text }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p>No link pages have been published on this host yet.</p>
+    {% endif %}
+    <p><a href="/sitemap.xml">Sitemap</a></p>
+  </main>
+</body>
+</html>

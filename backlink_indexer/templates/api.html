@@ -17,7 +17,10 @@
   <pre>curl -H "Authorization: Bearer YOUR_KEY" {{ base }}/api/v1/credits
 curl -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"Demo","project_type":"indexing","daily_speed":10,"urls":["https://example.com/a"]}' \
-  {{ base }}/api/v1/campaigns</pre>
-  <p class="sub">Reports count confirmed indexed URLs only. They never guess.</p>
+  {{ base }}/api/v1/campaigns
+curl -H "Authorization: Bearer YOUR_KEY" {{ base }}/api/v1/campaigns/PROJECT_ID
+curl -H "Authorization: Bearer YOUR_KEY" "{{ base }}/api/v1/campaigns/PROJECT_ID/urls?status=indexed"
+curl -X POST -H "Authorization: Bearer YOUR_KEY" {{ base }}/api/v1/urls/URL_ID/recheck</pre>
+  <p class="sub">Creating a campaign returns <code>accepted</code>, <code>not_sendable</code> (url and reason), and <code>skipped_duplicates</code>. Credits are reserved until a URL is confirmed indexed, then consumed. The campaign payload includes <code>indexed_rate</code>, <code>avg_days_to_index</code>, per-status counts, and <code>refunded</code>. Reports count confirmed indexed URLs only. They never guess.</p>
 </div>
 {% endblock %}

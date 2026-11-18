@@ -6,6 +6,7 @@ Push success never sets indexed. Reports count confirmed indexed URLs only.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,8 @@ from .services.quotas import consume as consume_global_quota
 from .services.quotas import remaining as global_quota_remaining
 from .services.secrets import setting_or_env
 from .services.urlutil import canonicalize, host_of
+
+logger = logging.getLogger(__name__)
 
 CHECK_DAYS = (1, 3, 7, 14, 28)
 GOOGLE_PUSH_WARNING = (
@@ -112,12 +115,24 @@ def _error_count(url_id: int) -> int:
     return int(row["c"] or 0) if row else 0
 
 
+def _note_failure(errors: list[dict], exc: Exception, **fields: Any) -> None:
+    """Record one item failure and clear an aborted Postgres transaction."""
+    try:
+        get_conn().rollback()
+    except Exception:
+        pass
+    logger.exception("cron item failed")
+    message = f"{type(exc).__name__}: {exc}"[:500]
+    errors.append({**fields, "error": message})
+
+
 async def precheck_ids(url_ids: list[int], client: Optional[httpx.AsyncClient] = None) -> dict[str, list]:
     accepted: list[dict] = []
     not_sendable: list[dict] = []
     skipped: list[str] = []
+    errors: list[dict] = []
     if not url_ids:
-        return {"accepted": accepted, "not_sendable": not_sendable, "skipped_duplicates": skipped}
+        return {"accepted": accepted, "not_sendable": not_sendable, "skipped_duplicates": skipped, "errors": errors}
     owns_client = client is None
     if client is None:
         client = httpx.AsyncClient(follow_redirects=True, timeout=4)
@@ -140,13 +155,17 @@ async def precheck_ids(url_ids: list[int], client: Optional[httpx.AsyncClient] =
             if time.monotonic() - started > budget:
                 accepted.append({"id": int(row["id"]), "url": row["url"], "status": "queued", "kind": row.get("kind") or "external"})
                 continue
-            result = await precheck_url(
-                paced,
-                row["url"],
-                (row.get("target_domain") or host_of(row["url"]) or "example.com"),
-                bool(row.get("include_subdomains", 1)),
-            )
-            outcome = _apply_precheck(dict(row), result)
+            try:
+                result = await precheck_url(
+                    paced,
+                    row["url"],
+                    (row.get("target_domain") or host_of(row["url"]) or "example.com"),
+                    bool(row.get("include_subdomains", 1)),
+                )
+                outcome = _apply_precheck(dict(row), result)
+            except Exception as exc:
+                _note_failure(errors, exc, url_id=int(row["id"]))
+                continue
             if outcome["bucket"] == "accepted":
                 accepted.append(outcome["item"])
             elif outcome["bucket"] == "not_sendable":
@@ -158,7 +177,7 @@ async def precheck_ids(url_ids: list[int], client: Optional[httpx.AsyncClient] =
     finally:
         if owns_client:
             await client.aclose()
-    return {"accepted": accepted, "not_sendable": not_sendable, "skipped_duplicates": skipped}
+    return {"accepted": accepted, "not_sendable": not_sendable, "skipped_duplicates": skipped, "errors": errors}
 
 
 def _apply_precheck(row: dict, result: dict) -> dict[str, Any]:
@@ -255,7 +274,8 @@ async def run_precheck() -> dict[str, Any]:
     ).fetchall()
     ids = [int(row["id"]) for row in rows]
     result = await precheck_ids(ids)
-    return {"checked": len(ids), **{key: len(value) for key, value in result.items()}}
+    errors = list(result.pop("errors", []))
+    return {"checked": len(ids), **{key: len(value) for key, value in result.items()}, "errors": errors}
 
 
 def _submitted_today(project_id: int) -> int:
@@ -447,6 +467,7 @@ async def run_drip(client: Optional[httpx.AsyncClient] = None) -> dict[str, Any]
         client = httpx.AsyncClient(timeout=8)
     created = 0
     pushed = 0
+    errors: list[dict] = []
     deadline = time.monotonic() + _job_seconds()
     page_cap = 2
     try:
@@ -462,24 +483,29 @@ async def run_drip(client: Optional[httpx.AsyncClient] = None) -> dict[str, Any]
                 if created >= page_cap or time.monotonic() >= deadline:
                     stop = True
                     break
-                domain = _pick_domain(domains, cursor)
-                cursor += 1
-                page = network.create_page(domain, [int(row["id"]) for row in chunk])
-                target = network.page_http_url(domain, page["slug"], base)
-                await _push_page(client, page, domain, target)
+                url_ids = [int(row["id"]) for row in chunk]
+                try:
+                    domain = _pick_domain(domains, cursor)
+                    cursor += 1
+                    page = network.create_page(domain, url_ids)
+                    target = network.page_http_url(domain, page["slug"], base)
+                    await _push_page(client, page, domain, target)
+                except Exception as exc:
+                    _note_failure(errors, exc, url_ids=url_ids)
+                    continue
                 created += 1
                 pushed += 1
             if stop:
                 break
         set_setting("hub_rr_cursor", str(cursor))
         if time.monotonic() < deadline:
-            await _repush(client, base, limit=1)
+            await _repush(client, base, limit=1, errors=errors)
         if time.monotonic() < deadline:
-            await _submit_own(client, limit=4)
+            await _submit_own(client, limit=4, errors=errors)
     finally:
         if owns:
             await client.aclose()
-    return {"pages": created, "pushed": pushed}
+    return {"pages": created, "pushed": pushed, "errors": errors}
 
 
 def _pick_domain(domains: list[dict], cursor: int) -> Optional[dict]:
@@ -505,7 +531,7 @@ def _job_seconds() -> float:
     return max(3.0, min(9.0, budget))
 
 
-async def _repush(client: httpx.AsyncClient, base: str, limit: int = 1) -> None:
+async def _repush(client: httpx.AsyncClient, base: str, limit: int = 1, errors: Optional[list[dict]] = None) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
     pages = get_conn().execute(
         """SELECT * FROM hub_pages
@@ -539,13 +565,20 @@ async def _repush(client: httpx.AsyncClient, base: str, limit: int = 1) -> None:
                 continue
         else:
             continue
-        domain = network.domain_by_id(page["hub_domain_id"]) if page.get("hub_domain_id") else None
-        target = network.page_http_url(domain, page["slug"], base)
-        await _push_page(client, page, domain, target)
+        try:
+            domain = network.domain_by_id(page["hub_domain_id"]) if page.get("hub_domain_id") else None
+            target = network.page_http_url(domain, page["slug"], base)
+            await _push_page(client, page, domain, target)
+        except Exception as exc:
+            if errors is not None:
+                _note_failure(errors, exc, page_id=int(page["id"]))
+            else:
+                raise
+            continue
         sent += 1
 
 
-async def _submit_own(client: httpx.AsyncClient, limit: int = 4) -> None:
+async def _submit_own(client: httpx.AsyncClient, limit: int = 4, errors: Optional[list[dict]] = None) -> None:
     rows = get_conn().execute(
         """SELECT u.*, p.user_id, p.daily_speed
            FROM urls u JOIN projects p ON p.id = u.project_id
@@ -564,25 +597,31 @@ async def _submit_own(client: httpx.AsyncClient, limit: int = 4) -> None:
             room[project_id] = max(0, int(row["daily_speed"] or 0) - _submitted_today(project_id))
         if room[project_id] <= 0:
             continue
-        host = row.get("host") or host_of(row["url"])
-        config = gsc.indexnow_for(int(row["user_id"]), host)
-        if not config.get("key") or not config.get("verified_at"):
-            network.log_event(int(row["id"]), "indexnow_push", {"ok": False, "detail": "Own host has no verified IndexNow key."})
-            continue
-        key_location = f"https://{host}/{config['key']}.txt"
-        result = await indexnow.submit(client, [row["url"]], config["key"], key_location)
-        network.log_event(int(row["id"]), "indexnow_push", {"url": row["url"], **result})
-        if not result.get("ok"):
-            continue
-        now = utcnow()
-        with tx() as conn:
-            conn.execute(
-                """UPDATE urls SET status = 'submitted',
-                   submitted_at = CASE WHEN submitted_at IS NULL OR submitted_at = '' THEN ? ELSE submitted_at END,
-                   updated_at = ? WHERE id = ? AND status = 'queued'""",
-                (now, now, row["id"]),
-            )
-        room[project_id] -= 1
+        try:
+            host = row.get("host") or host_of(row["url"])
+            config = gsc.indexnow_for(int(row["user_id"]), host)
+            if not config.get("key") or not config.get("verified_at"):
+                network.log_event(int(row["id"]), "indexnow_push", {"ok": False, "detail": "Own host has no verified IndexNow key."})
+                continue
+            key_location = f"https://{host}/{config['key']}.txt"
+            result = await indexnow.submit(client, [row["url"]], config["key"], key_location)
+            network.log_event(int(row["id"]), "indexnow_push", {"url": row["url"], **result})
+            if not result.get("ok"):
+                continue
+            now = utcnow()
+            with tx() as conn:
+                conn.execute(
+                    """UPDATE urls SET status = 'submitted',
+                       submitted_at = CASE WHEN submitted_at IS NULL OR submitted_at = '' THEN ? ELSE submitted_at END,
+                       updated_at = ? WHERE id = ? AND status = 'queued'""",
+                    (now, now, row["id"]),
+                )
+            room[project_id] -= 1
+        except Exception as exc:
+            if errors is not None:
+                _note_failure(errors, exc, url_id=int(row["id"]))
+            else:
+                raise
 
 
 def serpapi_key() -> str:
@@ -748,6 +787,7 @@ async def run_serp_checks(client: Optional[httpx.AsyncClient] = None) -> dict[st
     if client is None:
         client = httpx.AsyncClient(timeout=5)
     checked = 0
+    errors: list[dict] = []
     deadline = time.monotonic() + _job_seconds()
     try:
         for row in rows:
@@ -755,13 +795,17 @@ async def run_serp_checks(client: Optional[httpx.AsyncClient] = None) -> dict[st
                 break
             if serp_remaining()[0] <= 0 and not _cache_get("google|" + serp.build_query(row["url"])):
                 break
-            results = await check_url_serps(client, row["url"])
-            apply_serp(int(row["id"]), results)
+            try:
+                results = await check_url_serps(client, row["url"])
+                apply_serp(int(row["id"]), results)
+            except Exception as exc:
+                _note_failure(errors, exc, url_id=int(row["id"]))
+                continue
             checked += 1
     finally:
         if owns:
             await client.aclose()
-    return {"checked": checked, "refunded": refunded}
+    return {"checked": checked, "refunded": refunded, "errors": errors}
 
 
 async def run_inspection(client: Optional[httpx.AsyncClient] = None) -> dict[str, Any]:
@@ -775,33 +819,38 @@ async def run_inspection(client: Optional[httpx.AsyncClient] = None) -> dict[str
     if client is None:
         client = httpx.AsyncClient(timeout=5)
     checked = 0
+    errors: list[dict] = []
     deadline = time.monotonic() + _job_seconds()
     try:
         for row in rows:
             if time.monotonic() >= deadline:
                 break
-            user_id = int(row["user_id"])
-            config = await gsc.authorized_config(client, user_id)
-            prop = gsc.matching_property(row.get("host") or host_of(row["url"]), config.get("properties") or [])
-            if not prop:
+            try:
+                user_id = int(row["user_id"])
+                config = await gsc.authorized_config(client, user_id)
+                prop = gsc.matching_property(row.get("host") or host_of(row["url"]), config.get("properties") or [])
+                if not prop:
+                    continue
+                if not gsc.inspect_quota_take(user_id, prop):
+                    continue
+                result = await gsc.inspect_url(client, config, prop, row["url"])
+                network.log_event(int(row["id"]), "inspection", {"ok": result.get("ok"), "crawled": result.get("crawled"), "detail": result.get("detail")})
+                if result.get("crawled") and row.get("status") == "submitted":
+                    with tx() as conn:
+                        conn.execute(
+                            "UPDATE urls SET status = 'discovered', updated_at = ? WHERE id = ? AND status = 'submitted'",
+                            (utcnow(), row["id"]),
+                        )
+                if not result.get("ok") and int(result.get("status") or 0) >= 500:
+                    _notify_operators(f"URL Inspection failed for {row['url']}: {result.get('detail', '')[:160]}")
+            except Exception as exc:
+                _note_failure(errors, exc, url_id=int(row["id"]))
                 continue
-            if not gsc.inspect_quota_take(user_id, prop):
-                continue
-            result = await gsc.inspect_url(client, config, prop, row["url"])
-            network.log_event(int(row["id"]), "inspection", {"ok": result.get("ok"), "crawled": result.get("crawled"), "detail": result.get("detail")})
-            if result.get("crawled") and row.get("status") == "submitted":
-                with tx() as conn:
-                    conn.execute(
-                        "UPDATE urls SET status = 'discovered', updated_at = ? WHERE id = ? AND status = 'submitted'",
-                        (utcnow(), row["id"]),
-                    )
-            if not result.get("ok") and int(result.get("status") or 0) >= 500:
-                _notify_operators(f"URL Inspection failed for {row['url']}: {result.get('detail', '')[:160]}")
             checked += 1
     finally:
         if owns:
             await client.aclose()
-    return {"checked": checked}
+    return {"checked": checked, "errors": errors}
 
 
 def run_quota_reset() -> dict[str, Any]:

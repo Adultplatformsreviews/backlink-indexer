@@ -6,7 +6,7 @@ import json
 from typing import Any, Optional
 import httpx
 from fastapi import Form, HTTPException, Request, UploadFile, File
-from fastapi.responses import PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from . import network
 from .credits import summary_for_user
@@ -313,10 +313,27 @@ def register(app) -> None:
             result = runner()
             if hasattr(result, "__await__"):
                 result = await result
-            body = {"ok": True, "skipped": False}
+            body = {"ok": True, "skipped": False, "errors": []}
             if isinstance(result, dict):
                 body.update(result)
+            errors = body.get("errors") or []
+            if errors:
+                body["ok"] = False
+                body["errors"] = list(errors)
+                return JSONResponse(status_code=500, content=body)
             return body
+        except HTTPException:
+            raise
+        except Exception as exc:
+            try:
+                get_conn().rollback()
+            except Exception:
+                pass
+            message = f"{type(exc).__name__}: {exc}"[:500]
+            return JSONResponse(
+                status_code=500,
+                content={"ok": False, "skipped": False, "error": message, "errors": [{"error": message}]},
+            )
         finally:
             release_lease(name, token)
 

@@ -40,20 +40,28 @@ jobs:
           APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           CRON_PATH: /api/cron/precheck
-        run: bash -s <<'EOF'
-set -euo pipefail
-BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
-BASE="${BASE%/}"
-if [ -z "${CRON_SECRET:-}" ]; then
-  echo "Set the CRON_SECRET repository secret." >&2
-  exit 1
-fi
-curl --fail --silent --show-error --max-time 20 \
-  -X POST \
-  -H "Authorization: Bearer ${CRON_SECRET}" \
-  "${BASE}${CRON_PATH}"
-echo
-EOF
+        run: |
+          set -euo pipefail
+          BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+          BASE="${BASE%/}"
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "Set the CRON_SECRET repository secret." >&2
+            exit 1
+          fi
+          body_file="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 20 \
+            -o "${body_file}" \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE}${CRON_PATH}")"
+          echo "HTTP ${status}"
+          cat "${body_file}"
+          echo
+          rm -f "${body_file}"
+          if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+            exit 1
+          fi
 
   hourly:
     if: >
@@ -68,20 +76,28 @@ EOF
           APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           CRON_PATH: /api/cron/drip
-        run: bash -s <<'EOF'
-set -euo pipefail
-BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
-BASE="${BASE%/}"
-if [ -z "${CRON_SECRET:-}" ]; then
-  echo "Set the CRON_SECRET repository secret." >&2
-  exit 1
-fi
-curl --fail --silent --show-error --max-time 20 \
-  -X POST \
-  -H "Authorization: Bearer ${CRON_SECRET}" \
-  "${BASE}${CRON_PATH}"
-echo
-EOF
+        run: |
+          set -euo pipefail
+          BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+          BASE="${BASE%/}"
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "Set the CRON_SECRET repository secret." >&2
+            exit 1
+          fi
+          body_file="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 20 \
+            -o "${body_file}" \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE}${CRON_PATH}")"
+          echo "HTTP ${status}"
+          cat "${body_file}"
+          echo
+          rm -f "${body_file}"
+          if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+            exit 1
+          fi
       - name: POST /api/cron/serp-check
         if: github.event_name == 'schedule' || inputs.job == 'serp-check' || inputs.job == 'all-due'
         env:
@@ -89,20 +105,28 @@ EOF
           APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           CRON_PATH: /api/cron/serp-check
-        run: bash -s <<'EOF'
-set -euo pipefail
-BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
-BASE="${BASE%/}"
-if [ -z "${CRON_SECRET:-}" ]; then
-  echo "Set the CRON_SECRET repository secret." >&2
-  exit 1
-fi
-curl --fail --silent --show-error --max-time 20 \
-  -X POST \
-  -H "Authorization: Bearer ${CRON_SECRET}" \
-  "${BASE}${CRON_PATH}"
-echo
-EOF
+        run: |
+          set -euo pipefail
+          BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+          BASE="${BASE%/}"
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "Set the CRON_SECRET repository secret." >&2
+            exit 1
+          fi
+          body_file="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 20 \
+            -o "${body_file}" \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE}${CRON_PATH}")"
+          echo "HTTP ${status}"
+          cat "${body_file}"
+          echo
+          rm -f "${body_file}"
+          if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+            exit 1
+          fi
       - name: POST /api/cron/inspection-poll
         if: github.event_name == 'schedule' || inputs.job == 'inspection-poll' || inputs.job == 'all-due'
         env:
@@ -110,20 +134,28 @@ EOF
           APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           CRON_PATH: /api/cron/inspection-poll
-        run: bash -s <<'EOF'
-set -euo pipefail
-BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
-BASE="${BASE%/}"
-if [ -z "${CRON_SECRET:-}" ]; then
-  echo "Set the CRON_SECRET repository secret." >&2
-  exit 1
-fi
-curl --fail --silent --show-error --max-time 20 \
-  -X POST \
-  -H "Authorization: Bearer ${CRON_SECRET}" \
-  "${BASE}${CRON_PATH}"
-echo
-EOF
+        run: |
+          set -euo pipefail
+          BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+          BASE="${BASE%/}"
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "Set the CRON_SECRET repository secret." >&2
+            exit 1
+          fi
+          body_file="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 20 \
+            -o "${body_file}" \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE}${CRON_PATH}")"
+          echo "HTTP ${status}"
+          cat "${body_file}"
+          echo
+          rm -f "${body_file}"
+          if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+            exit 1
+          fi
 
   quota-reset:
     if: github.event_name == 'workflow_dispatch' && inputs.job == 'quota-reset'
@@ -135,17 +167,25 @@ EOF
           APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           CRON_PATH: /api/cron/quota-reset
-        run: bash -s <<'EOF'
-set -euo pipefail
-BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
-BASE="${BASE%/}"
-if [ -z "${CRON_SECRET:-}" ]; then
-  echo "Set the CRON_SECRET repository secret." >&2
-  exit 1
-fi
-curl --fail --silent --show-error --max-time 20 \
-  -X POST \
-  -H "Authorization: Bearer ${CRON_SECRET}" \
-  "${BASE}${CRON_PATH}"
-echo
-EOF
+        run: |
+          set -euo pipefail
+          BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+          BASE="${BASE%/}"
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "Set the CRON_SECRET repository secret." >&2
+            exit 1
+          fi
+          body_file="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 20 \
+            -o "${body_file}" \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE}${CRON_PATH}")"
+          echo "HTTP ${status}"
+          cat "${body_file}"
+          echo
+          rm -f "${body_file}"
+          if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+            exit 1
+          fi

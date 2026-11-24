@@ -7,6 +7,9 @@
 <p class="error">Only the operator account can open this page.</p>
 {% else %}
 <p class="sub">Daily URL counts reset each calendar day. Passwords are stored hashed and are not emailed from this page.</p>
+<p class="sub">Daily credit refill for {{ allowance_day }} (Asia/Karachi): once that day, each listed account is topped up so its available balance is at least the amount. A balance already at or above that amount is left alone, and a second run the same day adds nothing.
+  {% if credit_allowances %}{% for item in credit_allowances %}{{ item.email }}: {{ item.amount }}{% if not loop.last %}; {% endif %}{% endfor %}.{% else %}None configured.{% endif %}
+  Set <code>DAILY_CREDIT_EMAILS</code> to <code>email:amount,email:amount</code> to replace the list.</p>
 <div class="card table-wrap">
   <table class="data">
     <thead>

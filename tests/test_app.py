@@ -15,6 +15,7 @@ def client():
     with TestClient(app) as test_client:
         conn = get_conn()
         for table in (
+            "credit_ledger",
             "cron_leases",
             "events",
             "serp_cache",

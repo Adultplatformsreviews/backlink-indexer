@@ -29,6 +29,10 @@
     {
       "path": "/api/cron/inspection-poll",
       "schedule": "20 7 * * *"
+    },
+    {
+      "path": "/api/cron/daily-credits",
+      "schedule": "5 19 * * *"
     }
   ]
 }

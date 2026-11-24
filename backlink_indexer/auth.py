@@ -68,6 +68,9 @@ def _user_row(row: Optional[dict]) -> Optional[dict]:
             data["plan_name"] = "Free"
     data["is_admin"] = bool(data.get("is_admin"))
     data["disabled"] = bool(data.get("disabled"))
+    from .allowance import refresh_daily_allowance
+
+    refresh_daily_allowance(data)
     return data
 
 

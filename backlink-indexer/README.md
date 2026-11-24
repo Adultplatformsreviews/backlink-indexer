@@ -18,7 +18,7 @@ Own sites (Settings → Connections) use Google OAuth with the Search Console sc
 
 ### Migrations
 
-Schema changes are applied automatically the first time the process opens the database. They only add tables and columns. The same statements are recorded in `backlink_indexer/migrations/001_indexer_network.sql` for review. Nothing is dropped.
+Schema changes are applied automatically the first time the process opens the database. They only add tables and columns. The same statements are recorded in `backlink_indexer/migrations/001_indexer_network.sql` and `002_credit_ledger.sql` for review. Nothing is dropped.
 
 ### Environment variables
 
@@ -30,6 +30,7 @@ Schema changes are applied automatically the first time the process opens the da
 | `GOOGLE_CLIENT_SECRET` | Settings → Connections | OAuth client secret. |
 | `CRON_SECRET` | `/api/cron/*` | Send `Authorization: Bearer <CRON_SECRET>`. On Vercel this should be set. |
 | `DATABASE_URL` (or `POSTGRES_URL`) | Durable deploys | Postgres connection. Without it the database is local SQLite. |
+| `DAILY_CREDIT_EMAILS` | Daily credit refill | `email:amount,email:amount`. Once per Asia/Karachi day, each account's available balance is topped up to that amount. Unset or blank uses `jhonnymorris96@gmail.com:100`. A non-blank value replaces that default. |
 
 Optional: `INDEXER_HOST_INTERVAL` (seconds between pre-check requests to one host, default 1), `PRECHECK_BUDGET_SECONDS`, `INDEXER_SKIP_LIVE_PRECHECK=1` (tests only).
 
@@ -45,13 +46,15 @@ Hobby allows each Vercel cron to run **once per day** (up to 100 jobs). `vercel.
 | `/api/cron/drip` | 06:40 | One bounded hub-page batch |
 | `/api/cron/serp-check` | 07:00 | One bounded SERP batch |
 | `/api/cron/inspection-poll` | 07:20 | One bounded inspection batch |
+| `/api/cron/daily-credits` | 19:05 | Refill configured daily credit allowances (00:05 Asia/Karachi) |
 
-Hobby invokes a daily job sometime in that hour, not at the exact minute. These daily calls are a safety net. The frequent schedule is GitHub Actions.
+Hobby invokes a daily job sometime in that hour, not at the exact minute. The indexer calls are a safety net for the frequent GitHub schedule. The 19:05 UTC credit refill is the daily job itself: the whole 19:00 UTC hour is already the new Asia/Karachi day.
 
 `.github/workflows/indexer-cron.yml` calls:
 
 - `/api/cron/precheck` every 15 minutes
 - `/api/cron/drip`, `/api/cron/serp-check`, and `/api/cron/inspection-poll` every hour
+- `/api/cron/daily-credits` once a day at 19:05 UTC
 
 Each call is `POST` with `Authorization: Bearer $CRON_SECRET`, `curl --fail`, and a 20 second timeout. You can also run it by hand from the Actions tab (`workflow_dispatch`).
 

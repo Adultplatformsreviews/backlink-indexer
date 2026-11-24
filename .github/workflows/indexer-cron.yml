@@ -9,6 +9,8 @@ on:
     - cron: "*/15 * * * *"
     # Drip, SERP checks, and Search Console inspection.
     - cron: "0 * * * *"
+    # Daily credit refill. 19:05 UTC is 00:05 Asia/Karachi (UTC+5).
+    - cron: "5 19 * * *"
   workflow_dispatch:
     inputs:
       job:
@@ -22,6 +24,7 @@ on:
           - serp-check
           - inspection-poll
           - quota-reset
+          - daily-credits
 
 concurrency:
   group: indexer-cron-${{ github.event.schedule || github.event.inputs.job || 'manual' }}
@@ -167,6 +170,41 @@ jobs:
           APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           CRON_PATH: /api/cron/quota-reset
+        run: |
+          set -euo pipefail
+          BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"
+          BASE="${BASE%/}"
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "Set the CRON_SECRET repository secret." >&2
+            exit 1
+          fi
+          body_file="$(mktemp)"
+          status="$(curl --silent --show-error --max-time 20 \
+            -o "${body_file}" \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE}${CRON_PATH}")"
+          echo "HTTP ${status}"
+          cat "${body_file}"
+          echo
+          rm -f "${body_file}"
+          if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+            exit 1
+          fi
+
+  daily-credits:
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '5 19 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.job == 'daily-credits' || inputs.job == 'all-due'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/cron/daily-credits
+        env:
+          APP_BASE_URL_VAR: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL_SECRET: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_PATH: /api/cron/daily-credits
         run: |
           set -euo pipefail
           BASE="${APP_BASE_URL_VAR:-${APP_BASE_URL_SECRET:-https://backlink-indexer-zeta.vercel.app}}"

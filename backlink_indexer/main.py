@@ -35,6 +35,7 @@ from .auth import (
     set_user_password,
     verify_password,
 )
+from .allowance import allowance_day, daily_credit_allowances
 from .limits import urls_used_today
 from .email_login import consume_reset_token, issue_reset
 from .mailer import describe_mailer
@@ -463,7 +464,20 @@ async def users_page(request: Request):
     people = []
     for account in list_users():
         people.append({**account, "used_today": urls_used_today(account["id"])})
-    return render(request, "users.html", user=user, active="users", forbidden=False, people=people)
+    allowances = [
+        {"email": email, "amount": amount}
+        for email, amount in sorted(daily_credit_allowances().items())
+    ]
+    return render(
+        request,
+        "users.html",
+        user=user,
+        active="users",
+        forbidden=False,
+        people=people,
+        credit_allowances=allowances,
+        allowance_day=allowance_day(),
+    )
 
 
 @app.post("/app/users/{user_id}/password")
@@ -1000,6 +1014,7 @@ async def plans_page(request: Request):
         speed=_account_speed(user),
         refund_days=get_setting("refund_window_days") or "7",
         refunded_urls=summary["refunded_urls"],
+        daily_credit_target=daily_credit_allowances().get((user.get("email") or "").strip().lower()) or 0,
     )
 
 

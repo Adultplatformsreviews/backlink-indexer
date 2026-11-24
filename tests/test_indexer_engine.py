@@ -32,7 +32,7 @@ def client():
     with TestClient(app) as test_client:
         conn = get_conn()
         for table in (
-            "cron_leases", "events", "serp_cache", "hub_pages", "hub_domains", "connections",
+            "credit_ledger", "cron_leases", "events", "serp_cache", "hub_pages", "hub_domains", "connections",
             "submission_log", "urls", "batches", "notifications", "tickets",
             "api_keys", "sessions", "projects", "owned_hosts", "daily_usage",
             "login_codes", "users",
@@ -370,6 +370,7 @@ def test_cron_routes_require_secret(client, monkeypatch):
         "/api/cron/serp-check",
         "/api/cron/inspection-poll",
         "/api/cron/quota-reset",
+        "/api/cron/daily-credits",
     ):
         assert client.get(path).status_code == 401
     ok = client.post("/api/cron/quota-reset", headers={"Authorization": "Bearer cron-secret"})

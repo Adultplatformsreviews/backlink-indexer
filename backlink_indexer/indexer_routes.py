@@ -9,6 +9,7 @@ from fastapi import Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from . import network
+from .allowance import run_daily_credits
 from .credits import summary_for_user
 from .database import get_conn, get_setting, utcnow
 from .cronlock import acquire_lease, release_lease
@@ -356,6 +357,10 @@ def register(app) -> None:
     @app.api_route("/api/cron/quota-reset", methods=["GET", "POST"])
     async def cron_quota(request: Request):
         return await _locked(request, "quota-reset", run_quota_reset)
+
+    @app.api_route("/api/cron/daily-credits", methods=["GET", "POST"])
+    async def cron_daily_credits(request: Request):
+        return await _locked(request, "daily-credits", run_daily_credits)
 
     @app.get("/api/v1/campaigns/{project_id}/urls")
     async def v1_url_list(project_id: int, request: Request, status: str = "", page: int = 1, per: int = 50):
